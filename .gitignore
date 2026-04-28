@@ -1,0 +1,17 @@
+# Editor / OS noise
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
+
+# Local-only working files
+*.local
+*.bak
+
+# Anything containing secrets — paranoia layer
+*.pem
+*.key
+*credentials*
+.env
+.env.*
