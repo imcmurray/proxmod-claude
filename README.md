@@ -14,12 +14,14 @@ A privileged Ubuntu 24.04 LXC container with:
 
 - Claude Code (native installer) — auto-approve permissions, agent teams, 64k output, extended thinking
 - Pre-installed plugins: frontend-design, code-review, commit-commands, security-guidance, context7, webapp-testing, superpowers
-- Languages: Node.js 22 LTS, Python 3.12, Go (latest), Rust (latest)
+- Languages: Node.js 22 LTS, Python 3.12 (with `uv`), Go (latest), Rust (latest)
 - Docker + Compose running inside the LXC, with Watchtower auto-updating containers
 - Code-server (browser VS Code) on port 8443 with a randomly-generated password
-- Deploy CLIs: GitHub (`gh`), Railway (`@railway/cli`), Cloudflare Workers (`wrangler`)
+- **Always-installed extras** (no auth burden): `lazygit`, `uv`, `direnv` (with bash hook), `httpie`, `rclone`
+- **Optional cloud/deploy CLIs** (chosen via prompt at deploy time): `gh`, `railway`, `wrangler`, `aws`, `flyctl`, `vercel`, `doctl` — defaults to `gh railway wrangler`, type `all` or `none` to override
 - ripgrep / fd / fzf / bat / jq / postgres-client / redis-tools / sqlite3 / Playwright
 - Auto-cd to `/project` on shell login, sensible aliases, git defaults, weekly system updates
+- **Python policy:** every Python project gets its own `.venv/` — `pip install --break-system-packages` is **not** the convention here
 
 ## Files in this repo
 
@@ -100,6 +102,7 @@ You'll be prompted for:
 | IP | `dhcp` | Static if you want a stable IP |
 | DNS | `1.1.1.2` | Cloudflare malware-blocking; plain `1.1.1.1` also fine |
 | SSH key path | *(none)* | Paste `/root/.ssh/id_ed25519.pub` or similar |
+| Cloud/deploy CLIs | `gh railway wrangler` | Space-separated. `all` or `none` accepted. Valid: `gh railway wrangler aws flyctl vercel doctl` |
 
 Then it confirms with a summary, you type `y`, and the script:
 
@@ -275,9 +278,9 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Verification step | Lines 540-551 | Fails loudly if `claude`, `node`, `docker`, etc. didn't actually install |
 | Random code-server password | Lines 97-98, 557-560 | No more hardcoded `admin` |
 | Password shown in summary | Lines 586-588 | Visible once at deploy, recoverable from compose file |
-| GitHub CLI (`gh`) | Provisioning script | Auth with `gh auth login` post-deploy |
-| Railway CLI (`@railway/cli`) | Provisioning script | Auth with `railway login` post-deploy |
-| Cloudflare Workers CLI (`wrangler`) | Provisioning script | Auth with `wrangler login` post-deploy |
+| Optional cloud/deploy CLI prompt | `get_config` | Pick from `gh railway wrangler aws flyctl vercel doctl` at deploy time |
+| Always-installed extras | Provisioning script | `lazygit`, `uv`, `direnv` (+ bash hook), `httpie`, `rclone` |
+| Python policy: venv-required | `CLAUDE.md` heredoc | Replaces upstream's `--break-system-packages` guidance with mandatory venvs |
 
 ---
 

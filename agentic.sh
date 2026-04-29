@@ -94,6 +94,30 @@ get_config() {
   # SSH key (optional)
   read -rp "Path to SSH public key (optional, press Enter to skip): " CT_SSH_KEY
 
+  # Optional cloud/deploy CLIs — each adds size and an auth step, so opt-in
+  echo ""
+  echo -e "${BOLD}Optional cloud/deploy CLIs:${NC}"
+  echo "  gh        GitHub CLI"
+  echo "  railway   Railway"
+  echo "  wrangler  Cloudflare Workers"
+  echo "  aws       AWS CLI v2"
+  echo "  flyctl    Fly.io"
+  echo "  vercel    Vercel"
+  echo "  doctl     DigitalOcean"
+  read -rp "CLIs to install (space-separated, 'all', or 'none') [gh railway wrangler]: " CT_CLIS
+  CT_CLIS="${CT_CLIS:-gh railway wrangler}"
+  if [[ "$CT_CLIS" == "none" ]]; then
+    CT_CLIS=""
+  elif [[ "$CT_CLIS" == "all" ]]; then
+    CT_CLIS="gh railway wrangler aws flyctl vercel doctl"
+  fi
+  for cli in $CT_CLIS; do
+    case "$cli" in
+      gh|railway|wrangler|aws|flyctl|vercel|doctl) ;;
+      *) error "Unknown CLI: $cli (valid: gh railway wrangler aws flyctl vercel doctl)" ;;
+    esac
+  done
+
   # Generate a random code-server web password (alphanumeric only, no shell-special chars)
   CT_CS_PWD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20)
 
@@ -109,6 +133,8 @@ get_config() {
   echo "  Disk:       ${CT_DISK}G on $CT_STORAGE"
   echo "  Network:    $CT_IP"
   echo "  DNS:        $CT_DNS"
+  echo "  CLIs:       ${CT_CLIS:-(none)}"
+  echo "  Extras:     lazygit, uv, direnv, httpie, rclone (always)"
   echo "─────────────────────────────────────────────────"
   echo ""
   read -rp "Proceed? (y/N): " confirm
@@ -254,24 +280,41 @@ echo ">>> Installing database clients..."
 apt-get install -y -qq \
   postgresql-client redis-tools
 
-echo ">>> Installing GitHub CLI (gh)..."
-mkdir -p -m 755 /etc/apt/keyrings
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
-apt-get update -qq
-apt-get install -y -qq gh
-echo "    gh $(gh --version | head -1 | awk '{print $3}')"
+# Selected cloud/deploy CLIs (placeholder substituted by host script)
+SELECTED_CLIS="@@SELECTED_CLIS@@"
+cli_selected() {
+  for c in $SELECTED_CLIS; do [[ "$c" == "$1" ]] && return 0; done
+  return 1
+}
+
+echo ">>> Installing always-on extras (direnv, httpie)..."
+apt-get install -y -qq direnv httpie
+
+if cli_selected gh; then
+  echo ">>> Installing GitHub CLI (gh)..."
+  mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+  chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+  apt-get update -qq
+  apt-get install -y -qq gh
+  echo "    gh $(gh --version | head -1 | awk '{print $3}')"
+fi
 
 echo ">>> Installing Node.js 22.x LTS..."
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y -qq nodejs
 echo "    Node.js $(node --version) / npm $(npm --version)"
 
-echo ">>> Installing global npm packages (incl. Railway CLI, Wrangler/Cloudflare CLI)..."
-npm install -g typescript ts-node eslint prettier @railway/cli wrangler
-echo "    Railway $(railway --version 2>/dev/null | awk '{print $NF}')"
-echo "    Wrangler $(wrangler --version 2>/dev/null | head -1 | awk '{print $NF}')"
+echo ">>> Installing global npm packages..."
+NPM_GLOBALS="typescript ts-node eslint prettier"
+cli_selected railway  && NPM_GLOBALS="$NPM_GLOBALS @railway/cli"
+cli_selected wrangler && NPM_GLOBALS="$NPM_GLOBALS wrangler"
+cli_selected vercel   && NPM_GLOBALS="$NPM_GLOBALS vercel"
+npm install -g $NPM_GLOBALS
+cli_selected railway  && echo "    Railway $(railway --version 2>/dev/null | awk '{print $NF}')"
+cli_selected wrangler && echo "    Wrangler $(wrangler --version 2>/dev/null | head -1 | awk '{print $NF}')"
+cli_selected vercel   && echo "    Vercel $(vercel --version 2>/dev/null | head -1)"
 
 echo ">>> Installing Go..."
 GO_VERSION=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1)
@@ -295,6 +338,47 @@ echo "    Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 echo ">>> Installing Docker Compose plugin..."
 apt-get install -y -qq docker-compose-plugin 2>/dev/null || true
 echo "    Compose $(docker compose version --short 2>/dev/null || echo 'included with Docker')"
+
+if cli_selected aws; then
+  echo ">>> Installing AWS CLI v2..."
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp/
+  /tmp/aws/install >/dev/null
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+  echo "    aws $(aws --version 2>&1 | awk '{print $1}')"
+fi
+
+if cli_selected flyctl; then
+  echo ">>> Installing flyctl (Fly.io)..."
+  curl -fsSL https://fly.io/install.sh | sh >/dev/null
+  ln -sf /root/.fly/bin/flyctl /usr/local/bin/flyctl
+  ln -sf /root/.fly/bin/fly    /usr/local/bin/fly
+  echo "    flyctl $(/root/.fly/bin/flyctl version 2>/dev/null | awk '{print $2}')"
+fi
+
+if cli_selected doctl; then
+  echo ">>> Installing doctl (DigitalOcean)..."
+  DOCTL_VERSION=$(curl -fsSL https://api.github.com/repos/digitalocean/doctl/releases/latest | grep -Po '"tag_name": "v\K[^"]*')
+  curl -fsSL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-amd64.tar.gz" | tar xz -C /tmp/
+  mv /tmp/doctl /usr/local/bin/
+  echo "    doctl $(doctl version 2>/dev/null | head -1 | awk '{print $3}')"
+fi
+
+echo ">>> Installing always-on extras (lazygit, uv, rclone)..."
+# lazygit — TUI git client
+LG_VERSION=$(curl -fsSL "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
+curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LG_VERSION}/lazygit_${LG_VERSION}_Linux_x86_64.tar.gz" -o /tmp/lazygit.tar.gz
+tar xzf /tmp/lazygit.tar.gz -C /tmp/ lazygit && mv /tmp/lazygit /usr/local/bin/ && rm /tmp/lazygit.tar.gz
+echo "    lazygit $LG_VERSION"
+
+# uv — fast Python package manager
+curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
+[[ -f /root/.local/bin/uv ]] && ln -sf /root/.local/bin/uv /usr/local/bin/uv
+echo "    uv $(/root/.local/bin/uv --version 2>/dev/null | awk '{print $2}')"
+
+# rclone — official installer
+curl -fsSL https://rclone.org/install.sh | bash >/dev/null 2>&1 || true
+echo "    rclone $(rclone version 2>/dev/null | head -1 | awk '{print $2}')"
 
 echo ">>> Installing Claude Code (native installer)..."
 curl -fsSL https://claude.ai/install.sh | bash
@@ -366,9 +450,14 @@ cat > /project/CLAUDE.md << 'CLAUDEMD'
 - **Package managers**: npm, pip (use --break-system-packages), cargo, go install
 - **Docker**: Docker Engine + Compose plugin, running and ready
 - **Containers**: Watchtower (auto-updates), Code Server (port 8443)
-- **Search tools**: ripgrep (rg), fd-find (fdfind), fzf
+- **Search tools**: ripgrep (rg), fd-find (fdfind), fzf, bat
 - **Databases**: PostgreSQL client (psql), Redis client (redis-cli), SQLite3
-- **Deploy CLIs**: GitHub (`gh auth login`), Railway (`railway login`), Cloudflare Wrangler (`wrangler login`) — all installed but unauthenticated, run the login command once to auth
+- **TUI helpers**: lazygit (TUI git)
+- **Python tooling**: uv (fast pip/venv replacement; prefer over pip+venv)
+- **HTTP testing**: httpie (`http`, `https` commands — sane curl)
+- **Cloud sync**: rclone (S3, R2, B2, Drive, Dropbox, etc.)
+- **Per-dir env**: direnv (drop a `.envrc` in a project to auto-load env vars)
+- **Deploy CLIs**: whichever you opted into at deploy time (gh, railway, wrangler, aws, flyctl, vercel, doctl). Run `<cli> auth login` (or `aws configure` / `doctl auth init`) to auth. Re-check what's installed with `which gh railway wrangler aws flyctl vercel doctl 2>/dev/null`.
 
 ## Permissions
 All tools are pre-approved — no permission prompts. Bash, Read, Write, Edit, WebFetch, WebSearch, Task, and MCP tools all run without confirmation.
@@ -391,7 +480,16 @@ All Docker containers in this LXC need `security_opt: [apparmor=unconfined]`.
 ## Conventions
 - Prefer creating files over printing long code blocks
 - Use git for version control on all projects in /project/src/
-- When installing Python packages, use: pip install --break-system-packages <package>
+- **Python work MUST use a virtual environment.** Never install packages globally,
+  never use `pip install --break-system-packages`, never run `pip` outside a venv.
+  Standard pattern in any Python project directory:
+  ```
+  uv venv                    # creates .venv/ (preferred — fast)
+  source .venv/bin/activate
+  uv pip install <package>   # or: pip install <package>
+  ```
+  If you don't have `uv`, `python -m venv .venv` works too. The point is: every
+  Python project gets its own isolated `.venv/`. Add `.venv/` to `.gitignore`.
 - Extended thinking is always on — use it for complex architectural decisions
 
 ## Installed Plugins
@@ -451,6 +549,10 @@ alias gs="git status"
 alias gl="git log --oneline -20"
 alias dc="docker compose"
 alias dps="docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+alias lg="lazygit"
+
+# direnv: per-directory env vars from .envrc
+eval "$(direnv hook bash)"
 
 # Always start in /project
 cd /project 2>/dev/null || true
@@ -534,6 +636,10 @@ echo "║          Provisioning Complete!                  ║"
 echo "╚══════════════════════════════════════════════════╝"
 PROVISION_EOF
 
+  # Substitute the selected-CLIs placeholder. CT_CLIS is validated to a known
+  # alphanumeric set, so it's safe in sed without escaping.
+  sed -i "s|@@SELECTED_CLIS@@|${CT_CLIS}|" /tmp/provision-${CT_ID}.sh
+
   chmod +x /tmp/provision-${CT_ID}.sh
   pct push "$CT_ID" /tmp/provision-${CT_ID}.sh /tmp/provision.sh
   pct exec "$CT_ID" -- chmod +x /tmp/provision.sh
@@ -606,16 +712,28 @@ print_summary() {
   echo ""
   echo -e "  ${BOLD}Installed:${NC}"
   echo "    • Claude Code (native)    • Node.js 22 LTS"
-  echo "    • Python 3 + pip + venv   • Go (latest)"
+  echo "    • Python 3 + uv + venv    • Go (latest)"
   echo "    • Rust (via rustup)       • Docker + Compose"
   echo "    • Git, ripgrep, fzf, fd   • Build essentials"
   echo "    • PostgreSQL & Redis CLI  • Watchtower (auto-update containers)"
-  echo "    • Code Server (port 8443) • gh / Railway / Wrangler CLIs"
-  echo ""
-  echo -e "  ${BOLD}Deploy-CLI auth (run once inside the container):${NC}"
-  echo "    gh auth login         # GitHub"
-  echo "    railway login         # Railway"
-  echo "    wrangler login        # Cloudflare Workers"
+  echo "    • Code Server (port 8443) • lazygit, direnv, httpie, rclone"
+  [[ -n "$CT_CLIS" ]] && echo "    • CLIs selected: $CT_CLIS"
+
+  if [[ -n "$CT_CLIS" ]]; then
+    echo ""
+    echo -e "  ${BOLD}Deploy-CLI auth (run once inside the container):${NC}"
+    for cli in $CT_CLIS; do
+      case "$cli" in
+        gh)       echo "    gh auth login          # GitHub" ;;
+        railway)  echo "    railway login          # Railway" ;;
+        wrangler) echo "    wrangler login         # Cloudflare Workers" ;;
+        aws)      echo "    aws configure          # AWS" ;;
+        flyctl)   echo "    flyctl auth login      # Fly.io" ;;
+        vercel)   echo "    vercel login           # Vercel" ;;
+        doctl)    echo "    doctl auth init        # DigitalOcean" ;;
+      esac
+    done
+  fi
   echo ""
   echo -e "  ${BOLD}Permissions:${NC}  All tools pre-approved (no prompts)"
   echo -e "  ${BOLD}Config:${NC}      ~/.claude/settings.json"
