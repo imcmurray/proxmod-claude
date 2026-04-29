@@ -17,6 +17,7 @@ A privileged Ubuntu 24.04 LXC container with:
 - Languages: Node.js 22 LTS, Python 3.12, Go (latest), Rust (latest)
 - Docker + Compose running inside the LXC, with Watchtower auto-updating containers
 - Code-server (browser VS Code) on port 8443 with a randomly-generated password
+- Deploy CLIs: GitHub (`gh`), Railway (`@railway/cli`), Cloudflare Workers (`wrangler`)
 - ripgrep / fd / fzf / bat / jq / postgres-client / redis-tools / sqlite3 / Playwright
 - Auto-cd to `/project` on shell login, sensible aliases, git defaults, weekly system updates
 
@@ -139,14 +140,17 @@ Total time: ~10–15 minutes depending on network.
 
 ## 4. Post-deploy (do all four)
 
-### 4a. Authenticate Claude
+### 4a. Authenticate Claude (and the deploy CLIs)
 
 ```bash
 pct enter <CT_ID>     # drops into /project automatically
-claude
+claude                # first run: opens auth URL
+gh auth login         # GitHub
+railway login         # Railway
+wrangler login        # Cloudflare Workers
 ```
 
-First run prints a URL — open on your laptop, sign into Anthropic, paste the token back.
+Each prints a URL — open on your laptop, complete the flow, paste the token back. Skip any CLI you don't use; tokens land in `~/.config/<cli>/` and survive restarts.
 
 ### 4b. Smoke-test it
 
@@ -271,6 +275,9 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Verification step | Lines 540-551 | Fails loudly if `claude`, `node`, `docker`, etc. didn't actually install |
 | Random code-server password | Lines 97-98, 557-560 | No more hardcoded `admin` |
 | Password shown in summary | Lines 586-588 | Visible once at deploy, recoverable from compose file |
+| GitHub CLI (`gh`) | Provisioning script | Auth with `gh auth login` post-deploy |
+| Railway CLI (`@railway/cli`) | Provisioning script | Auth with `railway login` post-deploy |
+| Cloudflare Workers CLI (`wrangler`) | Provisioning script | Auth with `wrangler login` post-deploy |
 
 ---
 

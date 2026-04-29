@@ -254,13 +254,24 @@ echo ">>> Installing database clients..."
 apt-get install -y -qq \
   postgresql-client redis-tools
 
+echo ">>> Installing GitHub CLI (gh)..."
+mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+apt-get update -qq
+apt-get install -y -qq gh
+echo "    gh $(gh --version | head -1 | awk '{print $3}')"
+
 echo ">>> Installing Node.js 22.x LTS..."
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y -qq nodejs
 echo "    Node.js $(node --version) / npm $(npm --version)"
 
-echo ">>> Installing global npm packages..."
-npm install -g typescript ts-node eslint prettier
+echo ">>> Installing global npm packages (incl. Railway CLI, Wrangler/Cloudflare CLI)..."
+npm install -g typescript ts-node eslint prettier @railway/cli wrangler
+echo "    Railway $(railway --version 2>/dev/null | awk '{print $NF}')"
+echo "    Wrangler $(wrangler --version 2>/dev/null | head -1 | awk '{print $NF}')"
 
 echo ">>> Installing Go..."
 GO_VERSION=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1)
@@ -357,6 +368,7 @@ cat > /project/CLAUDE.md << 'CLAUDEMD'
 - **Containers**: Watchtower (auto-updates), Code Server (port 8443)
 - **Search tools**: ripgrep (rg), fd-find (fdfind), fzf
 - **Databases**: PostgreSQL client (psql), Redis client (redis-cli), SQLite3
+- **Deploy CLIs**: GitHub (`gh auth login`), Railway (`railway login`), Cloudflare Wrangler (`wrangler login`) — all installed but unauthenticated, run the login command once to auth
 
 ## Permissions
 All tools are pre-approved — no permission prompts. Bash, Read, Write, Edit, WebFetch, WebSearch, Task, and MCP tools all run without confirmation.
@@ -598,7 +610,12 @@ print_summary() {
   echo "    • Rust (via rustup)       • Docker + Compose"
   echo "    • Git, ripgrep, fzf, fd   • Build essentials"
   echo "    • PostgreSQL & Redis CLI  • Watchtower (auto-update containers)"
-  echo "    • Code Server (port 8443)"
+  echo "    • Code Server (port 8443) • gh / Railway / Wrangler CLIs"
+  echo ""
+  echo -e "  ${BOLD}Deploy-CLI auth (run once inside the container):${NC}"
+  echo "    gh auth login         # GitHub"
+  echo "    railway login         # Railway"
+  echo "    wrangler login        # Cloudflare Workers"
   echo ""
   echo -e "  ${BOLD}Permissions:${NC}  All tools pre-approved (no prompts)"
   echo -e "  ${BOLD}Config:${NC}      ~/.claude/settings.json"
