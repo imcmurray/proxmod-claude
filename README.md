@@ -255,6 +255,20 @@ Different problem entirely — host-level instability. See [`proxmox-silent-free
 ### Docker container inside the LXC won't start
 LXC is privileged with `lxc.apparmor.profile: unconfined` — Docker containers also need `security_opt: [apparmor=unconfined]` in their compose files. The Watchtower and code-server stacks already include this; copy the pattern for any new service.
 
+### `docker compose build` fails with `apparmor_parser: Access denied`
+This happens when BuildKit (Docker's default builder) tries to load an AppArmor profile from inside the LXC. The host kernel's AppArmor refuses because the LXC is unconfined and has no privilege to load profiles.
+
+`agentic.sh` now writes `/etc/docker/daemon.json` with `{"apparmor": false}` during provisioning to prevent this. If your container was deployed before that change, apply it once:
+
+```bash
+# On the Proxmox host:
+pct exec <CT_ID> -- bash -c 'mkdir -p /etc/docker && echo "{\"apparmor\": false}" > /etc/docker/daemon.json && systemctl restart docker'
+```
+
+Verify with `pct exec <CT_ID> -- docker info | grep -i apparmor` — should show "AppArmor: false" or similar (or just no AppArmor line at all). Builds should now work.
+
+If you still hit issues, the per-build escape hatch is `DOCKER_BUILDKIT=0 docker compose build` (uses the legacy builder, which doesn't trip on this).
+
 ### `apt install` fails with "Unable to locate package"
 The provision script wipes the apt cache to save space. Refresh first:
 
@@ -281,6 +295,7 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Optional cloud/deploy CLI prompt | `get_config` | Pick from `gh railway wrangler aws flyctl vercel doctl` at deploy time |
 | Always-installed extras | Provisioning script | `lazygit`, `uv`, `direnv` (+ bash hook), `httpie`, `rclone` |
 | Python policy: venv-required | `CLAUDE.md` heredoc | Replaces upstream's `--break-system-packages` guidance with mandatory venvs |
+| Docker AppArmor disabled at daemon level | Provisioning script | `/etc/docker/daemon.json` set to `{"apparmor": false}` so `docker compose build` works inside the LXC |
 
 ---
 

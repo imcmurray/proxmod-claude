@@ -332,7 +332,22 @@ echo "    Rust $(rustc --version | awk '{print $2}')"
 
 echo ">>> Installing Docker..."
 curl -fsSL https://get.docker.com | sh
+
+# Privileged LXC + AppArmor on the host = `docker compose build` fails with
+# `apparmor_parser: Access denied` when BuildKit tries to load a profile.
+# Disabling AppArmor at the Docker daemon level avoids this entirely. Safe in
+# this context because the LXC itself is already `lxc.apparmor.profile:
+# unconfined` — there's nothing for Docker's per-container AppArmor to add.
+echo ">>> Configuring Docker for LXC (disable AppArmor at daemon level)..."
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << 'DOCKERD'
+{
+  "apparmor": false
+}
+DOCKERD
+
 systemctl enable docker
+systemctl restart docker
 echo "    Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 
 echo ">>> Installing Docker Compose plugin..."
