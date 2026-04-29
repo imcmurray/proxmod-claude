@@ -255,19 +255,66 @@ Different problem entirely — host-level instability. See [`proxmox-silent-free
 ### Docker container inside the LXC won't start
 LXC is privileged with `lxc.apparmor.profile: unconfined` — Docker containers also need `security_opt: [apparmor=unconfined]` in their compose files. The Watchtower and code-server stacks already include this; copy the pattern for any new service.
 
-### `docker compose build` fails with `apparmor_parser: Access denied`
-This happens when BuildKit (Docker's default builder) tries to load an AppArmor profile from inside the LXC. The host kernel's AppArmor refuses because the LXC is unconfined and has no privilege to load profiles.
+### `docker compose build` fails with `apparmor_parser: Access denied` — this is unfixable from inside the LXC
 
-`agentic.sh` now writes `/etc/docker/daemon.json` with `{"apparmor": false}` during provisioning to prevent this. If your container was deployed before that change, apply it once:
+**TL;DR:** Builds don't work in this LXC. Run-time (`docker compose up`) does. Strategy: build images elsewhere, run them here.
+
+**Why it happens.** The Proxmox host kernel reports AppArmor as enabled. When `docker compose build` runs, it spins up intermediate build containers; runc tries to configure AppArmor for each one by writing to `/proc/<pid>/attr/apparmor/`. That interface isn't exposed inside the LXC's PID namespace, so the write fails. The kernel reports AppArmor present, the interface isn't there, runc has no fallback path.
+
+**The three obvious-looking in-LXC fixes ALL fail. Tested:**
+
+| Suggestion | Outcome | Why |
+|------------|---------|-----|
+| `{"apparmor": false}` in `/etc/docker/daemon.json` | Docker daemon refuses to start (`directives don't match any configuration option: apparmor`) | Not a valid directive in modern Docker. |
+| `DOCKER_BUILDKIT=0` (legacy builder) | `apparmor_parser: Access denied` | The **daemon** (not the builder) applies the profile to intermediate build containers. |
+| `docker buildx --security-opt apparmor=unconfined` | `write fsmount:fscontext:proc/thread-self/attr/apparmor/exec: no such file` | LXC namespace can't expose the AppArmor procfs interface, so runc can't even write "unconfined" to it. |
+
+**If you ran the first one** (early version of this README incorrectly suggested it — apologies), restore Docker with:
 
 ```bash
 # On the Proxmox host:
-pct exec <CT_ID> -- bash -c 'mkdir -p /etc/docker && echo "{\"apparmor\": false}" > /etc/docker/daemon.json && systemctl restart docker'
+pct exec <CT_ID> -- bash -c 'echo "{}" > /etc/docker/daemon.json && systemctl restart docker'
+pct exec <CT_ID> -- systemctl is-active docker      # should print: active
 ```
 
-Verify with `pct exec <CT_ID> -- docker info | grep -i apparmor` — should show "AppArmor: false" or similar (or just no AppArmor line at all). Builds should now work.
+(Use an empty `{}` rather than deleting the file — keeps the file present as a place for future valid config.)
 
-If you still hit issues, the per-build escape hatch is `DOCKER_BUILDKIT=0 docker compose build` (uses the legacy builder, which doesn't trip on this).
+**What does work:**
+
+1. **Build elsewhere, run here.** Build images on your laptop, in a Proxmox VM, or in a CI pipeline. Push to a registry (Docker Hub, GitHub Container Registry, a self-hosted registry). `docker pull` and `docker compose up` from inside the LXC work normally.
+
+   ```bash
+   # On a non-LXC machine (your laptop):
+   docker build -t ghcr.io/<you>/myapp:latest .
+   docker push ghcr.io/<you>/myapp:latest
+
+   # In the LXC, in the project's docker-compose.yml:
+   services:
+     myapp:
+       image: ghcr.io/<you>/myapp:latest    # not `build: .`
+       security_opt: [apparmor=unconfined]
+   ```
+
+2. **Use a separate Proxmox VM for builds.** Spin up a small Ubuntu VM (not LXC) on the same host, install Docker there, build images there, push to a local registry or directly to your LXC's Docker via `docker save | docker load`. VMs don't have the AppArmor interface problem because they have their own kernel.
+
+3. **Run a tiny self-hosted registry inside the LXC.** Once you build elsewhere, push to a registry container running in this LXC (`docker run -d -p 5000:5000 registry:2`). Other LXCs/VMs on your network can pull from `<lxc-ip>:5000`.
+
+**At-runtime is fine.** `docker compose up`, `docker run`, `docker pull` all work normally because each service uses `security_opt: [apparmor=unconfined]` to bypass per-container AppArmor at runtime — runc only needs the interface for *configuring* profiles, not for "unconfined" runs. That's why Watchtower and code-server are running healthily in your LXC right now.
+
+**LXC-config-level paths that might fix the build problem** (less proven, but pointing in the right direction):
+
+- Mount the AppArmor `securityfs` into the LXC's namespace via `lxc.mount.entry` so the procfs interface is reachable. Untested in this repo.
+- Switch from `lxc.apparmor.profile: unconfined` to a generated profile with `lxc.apparmor.allow_nesting: 1`. Generally helps with nesting but unclear it crosses this specific kernel-interface gap.
+
+**Heavy hammer if nothing else works**, disable AppArmor on the *Proxmox host* itself:
+
+```bash
+# On the Proxmox host (NOT in the container) — affects all containers on this host:
+systemctl disable --now apparmor
+reboot
+```
+
+This weakens host security; it's a real trade-off, not a free win. Don't do it unless you understand what's gone.
 
 ### `apt install` fails with "Unable to locate package"
 The provision script wipes the apt cache to save space. Refresh first:
@@ -295,7 +342,7 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Optional cloud/deploy CLI prompt | `get_config` | Pick from `gh railway wrangler aws flyctl vercel doctl` at deploy time |
 | Always-installed extras | Provisioning script | `lazygit`, `uv`, `direnv` (+ bash hook), `httpie`, `rclone` |
 | Python policy: venv-required | `CLAUDE.md` heredoc | Replaces upstream's `--break-system-packages` guidance with mandatory venvs |
-| Docker AppArmor disabled at daemon level | Provisioning script | `/etc/docker/daemon.json` set to `{"apparmor": false}` so `docker compose build` works inside the LXC |
+| Documented Docker build limitation | Provisioning script comment + README §6 | `docker compose build` cannot work inside the LXC due to a kernel/namespace issue with AppArmor; run-time is fine. Workarounds: build elsewhere and push, or use a separate Proxmox VM for builds. |
 
 ---
 
