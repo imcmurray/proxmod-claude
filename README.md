@@ -13,7 +13,8 @@ Self-contained walkthrough for deploying a fully-provisioned Claude Code LXC con
 A privileged Ubuntu 24.04 LXC container with:
 
 - Claude Code (native installer) — auto-approve permissions, agent teams, 64k output, extended thinking
-- Pre-installed plugins: frontend-design, code-review, commit-commands, security-guidance, context7, webapp-testing, superpowers
+- Pre-installed plugins: frontend-design, code-review, commit-commands, security-guidance, context7
+- Pre-installed skill: webapp-testing (browser-based UI testing via Playwright; auto-discovered from `~/.claude/skills/`)
 - Languages: Node.js 22 LTS, Python 3.12 (with `uv`), Go (latest), Rust (latest)
 - Docker + Compose running inside the LXC, with Watchtower auto-updating containers
 - **Optional** code-server (browser VS Code) on port 8443 — Y/n prompt at deploy, default Yes. Runs natively as a systemd service so the integrated terminal is the LXC shell with `claude` already on PATH; Anthropic's Claude Code IDE extension is auto-installed. Skip with `n` if you only want SSH/`pct enter` access (saves ~200 MB and an open port).
@@ -197,7 +198,7 @@ See [`claude-code-container-workflow.md`](./claude-code-container-workflow.md) f
 
 - Connection methods (`pct enter`, SSH, browser code-server)
 - Where to put projects (`/project/<name>/`)
-- Available slash commands (`/code-review`, `/commit`, `/superpowers:*`)
+- Available slash commands (`/code-review`, `/commit`, `/push`, `/pr`)
 - Snapshots before risky changes
 - Adding things later (gh, git identity, MCP servers, custom skills)
 

@@ -450,8 +450,7 @@ cat > /root/.claude/settings.json << 'SETTINGS'
     "code-review@claude-code-plugins": true,
     "commit-commands@claude-code-plugins": true,
     "security-guidance@claude-code-plugins": true,
-    "context7@claude-plugin-directory": true,
-    "superpowers@superpowers-marketplace": true
+    "context7@claude-plugins-official": true
   }
 }
 SETTINGS
@@ -521,12 +520,7 @@ All Docker containers in this LXC need `security_opt: [apparmor=unconfined]`.
 - **commit-commands**: Git commit, push, and PR workflows (/commit, /push, /pr)
 - **security-guidance**: Security warnings when editing sensitive files
 - **context7**: Live, version-specific library docs lookup (reduces API hallucinations)
-- **webapp-testing**: Playwright-based browser testing for UI verification and debugging
-- **superpowers**: Development workflow framework — brainstorm → plan → implement with TDD
-  - /superpowers:brainstorm — Refine ideas before coding
-  - /superpowers:write-plan — Create implementation plans
-  - /superpowers:execute-plan — Execute plans in batches via subagents
-  - Auto-activating skills: test-driven-development, systematic-debugging, verification-before-completion
+- **webapp-testing** (skill): Playwright-based browser testing for UI verification and debugging
 CLAUDEMD
 
 echo ">>> Installing Claude Code plugins (official marketplace)..."
@@ -535,7 +529,13 @@ npx -y claude-plugins install @anthropics/claude-code-plugins/code-review
 npx -y claude-plugins install @anthropics/claude-code-plugins/commit-commands
 npx -y claude-plugins install @anthropics/claude-code-plugins/security-guidance
 npx -y claude-plugins install @anthropics/claude-plugins-official/context7
-npx -y claude-plugins install @obra/superpowers-marketplace/superpowers
+# NOTE: superpowers (@obra/superpowers-marketplace/superpowers) was previously
+# installed here but the install was unreliable — `/plugins` showed it missing
+# even when provisioning reported success, surfacing as a "not cached" error
+# every Claude Code session. To add it manually after deploy, run inside the
+# container:  npx -y claude-plugins install @obra/superpowers-marketplace/superpowers
+# then edit /root/.claude/settings.json to add "superpowers@superpowers-marketplace": true
+# under enabledPlugins.
 
 echo ">>> Installing webapp-testing skill (from anthropics/skills)..."
 git clone --depth 1 --filter=blob:none --sparse https://github.com/anthropics/skills.git /tmp/anthropic-skills
@@ -862,7 +862,8 @@ print_summary() {
   echo -e "  ${BOLD}Config:${NC}      ~/.claude/settings.json"
   echo -e "  ${BOLD}Features:${NC}    Agent teams, extended thinking, 64k output tokens, remote control"
   echo -e "  ${BOLD}Plugins:${NC}     frontend-design, code-review, commit-commands,"
-  echo -e "               security-guidance, context7, webapp-testing, superpowers"
+  echo -e "               security-guidance, context7"
+  echo -e "  ${BOLD}Skills:${NC}      webapp-testing (Playwright)"
   echo -e "  ${BOLD}Auto-updates:${NC} Sundays 3 AM ET (system) / Daily 4 AM ET (Docker)"
   echo ""
 }

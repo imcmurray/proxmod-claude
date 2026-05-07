@@ -30,9 +30,7 @@ These are pre-installed by `agentic.sh`. Type `/` inside Claude to see the full 
 | `/commit` | Stage, write a sensible commit message, commit |
 | `/push` | Push current branch to origin |
 | `/pr` | Open a pull request from current branch |
-| `/superpowers:brainstorm` | Refine an idea before coding |
-| `/superpowers:write-plan` | Generate an implementation plan |
-| `/superpowers:execute-plan` | Execute a plan in batches via subagents |
+| (optional) `/superpowers:*` | Brainstorm, plan, execute (install manually: `npx -y claude-plugins install @obra/superpowers-marketplace/superpowers`) |
 | `/remote-control` | Show QR code to control this session from claude.ai or mobile |
 
 ## Backups (set this up once)
