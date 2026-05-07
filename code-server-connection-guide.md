@@ -396,6 +396,8 @@ Anthropic publishes an official VS Code extension for Claude Code that adds an i
 
 **On current `agentic.sh` deploys, this is auto-installed.** The provisioning step runs `code-server --install-extension anthropic.claude-code` after code-server is on disk and before its systemd unit starts, so the extension is active on first browser load. If the auto-install failed (Open VSX availability for vendor-published extensions can vary) the warning is in the provision log — sideload manually as below.
 
+**The extension is pinned to terminal mode by default.** `agentic.sh` writes `"claudeCode.useTerminal": true` into `/root/.local/share/code-server/User/settings.json` before code-server starts. The newer GUI-mode panel has webview rendering issues under code-server (oversized icons, broken styles, session-list fetch failures) because code-server's webview sandbox/CSP differs subtly from upstream VS Code's. Terminal mode embeds the Claude TUI inside the side panel — same rock-solid UI as the integrated terminal, just in the panel position. To try GUI mode anyway, flip the setting to `false` and reload the window; if it works for you, leave it.
+
 **Manual install (existing deploy, or auto-install failed):**
 
 ```bash

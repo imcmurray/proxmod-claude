@@ -694,6 +694,20 @@ exit 127
 CODEWRAP
   chmod +x /root/.local/bin/code
 
+  # Pre-seed VS Code user settings for code-server: prefer the Claude Code
+  # terminal-mode panel over the new GUI mode. The GUI mode has webview
+  # rendering issues under code-server (oversized icons, broken styles,
+  # session-list fetch failures) — the webview sandbox / CSP differs subtly
+  # from upstream VS Code's. Terminal mode embeds the Claude TUI inside the
+  # side panel, which is rock-solid and behaves identically to running
+  # `claude` in the integrated terminal.
+  mkdir -p /root/.local/share/code-server/User
+  cat > /root/.local/share/code-server/User/settings.json << 'CSSETTINGS'
+{
+  "claudeCode.useTerminal": true
+}
+CSSETTINGS
+
   systemctl enable --now code-server@root
 else
   echo ">>> Skipping code-server (opted out at deploy time)."
