@@ -8,7 +8,7 @@ Quick reference for working in the Claude Code LXC container deployed by `agenti
 |--------|---------|----------|
 | Proxmox console | `pct enter <CT_ID>` (run on Proxmox host) | Quick admin tasks, no SSH needed |
 | SSH | `ssh root@<container-ip>` | Normal day-to-day work from laptop |
-| Browser VS Code | `http://<container-ip>:8443` | Editing files in a GUI, password set during deploy |
+| Browser VS Code | `https://<container-ip>:8443` (self-signed cert) | Editing files in a GUI, password set during deploy |
 
 ## Where to put things
 

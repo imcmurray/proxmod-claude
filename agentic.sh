@@ -451,7 +451,6 @@ cat > /root/.claude/settings.json << 'SETTINGS'
     "commit-commands@claude-code-plugins": true,
     "security-guidance@claude-code-plugins": true,
     "context7@claude-plugin-directory": true,
-    "webapp-testing@anthropic-agent-skills": true,
     "superpowers@superpowers-marketplace": true
   }
 }
@@ -619,7 +618,12 @@ if [[ "$INSTALL_CODE_SERVER" == "yes" ]]; then
 bind-addr: 0.0.0.0:8443
 auth: password
 password: PLACEHOLDER_CS_PWD
-cert: false
+# Self-signed cert. Required for webviews (Claude Code panel, Markdown
+# preview, image viewer, etc.) — browsers only expose `crypto.subtle` in
+# secure contexts (HTTPS or localhost), and code-server's webviews depend
+# on it. Browser will warn once per browser/profile; click through and
+# the warning is remembered.
+cert: true
 CSCONFIG
   # Password is in clear text in this file — restrict to root only.
   chmod 600 /root/.config/code-server/config.yaml
@@ -801,7 +805,7 @@ print_summary() {
   echo -e "    Console:  ${CYAN}pct enter $CT_ID${NC}"
   [[ -n "${ct_ip:-}" ]] && echo -e "    SSH:      ${CYAN}ssh root@${ct_ip}${NC}"
   if [[ "$CT_CODE_SERVER" == "yes" ]]; then
-    [[ -n "${ct_ip:-}" ]] && echo -e "    Code:     ${CYAN}http://${ct_ip}:8443${NC}"
+    [[ -n "${ct_ip:-}" ]] && echo -e "    Code:     ${CYAN}https://${ct_ip}:8443${NC}  ${YELLOW}(accept self-signed cert warning once per browser)${NC}"
     echo ""
     echo -e "  ${BOLD}${YELLOW}Code-server password (save now — randomly generated, only shown here):${NC}"
     echo -e "    ${BOLD}${CT_CS_PWD}${NC}"

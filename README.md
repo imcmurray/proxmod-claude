@@ -132,7 +132,7 @@ Total time: ~10–15 minutes depending on network.
   Connect:
     Console:  pct enter 112
     SSH:      ssh root@192.168.1.42
-    Code:     http://192.168.1.42:8443
+    Code:     https://192.168.1.42:8443  (accept self-signed cert warning once per browser)
 
   Code-server password (save now — randomly generated, only shown here):
     aB3xK9pL2mN7qR4tY8wZ
@@ -371,6 +371,7 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Code-server runs natively (not in Docker) | Provisioning script | Integrated terminal is the LXC shell — `claude`, `gh`, `lazygit`, etc. all on PATH for free. No `/`-mount, no double Claude install, no AppArmor-unconfined Docker layer for the editor. Updates via the apt repo the official installer adds, picked up by the existing weekly cron. |
 | Anthropic Claude Code IDE extension auto-installed | Provisioning script | `code-server --install-extension anthropic.claude-code` runs before the service starts, so the extension is active on first load and `claude /status` shows IDE connected. Failure is non-fatal (warning + log to `/tmp/cs-ext-install.log` inside the LXC); sideload steps in the connection guide §10.5. |
 | `/root/.local/bin/code` wrapper for subprocess use | Provisioning script | Code-server's session-injected `code` shim closes IPC streams prematurely for non-interactive subprocess callers (`ERR_STREAM_PREMATURE_CLOSE`). When `claude` runs in code-server's integrated terminal, this kills its IDE-attach probe and leaves the Claude Code extension panel blank. The wrapper routes `--install-extension` / `--list-extensions` etc. to `code-server`'s reliable CLI; passes everything else through to the real shim. Lives in `$HOME/.local/bin` which bashrc puts ahead of the session shim's path. |
+| Self-signed TLS for code-server (`cert: true`) | Provisioning script | Browser webviews (the Claude Code panel, Markdown preview, image viewer, etc.) require `crypto.subtle`, which browsers only expose to **secure contexts** — HTTPS or localhost. Plain HTTP from a non-localhost IP leaves all webviews blank. Self-signed cert costs one click-through warning per browser; real-cert setups (Caddy/Cloudflare) can override by setting `cert: false` and binding to `127.0.0.1` behind the proxy. |
 
 ---
 
