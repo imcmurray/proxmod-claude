@@ -640,6 +640,56 @@ CSCONFIG
     echo "    ! Sideload manually from the code-server Extensions panel if needed."
   fi
 
+  echo ">>> Installing /root/.local/bin/code wrapper (fixes Claude Code IDE attach)..."
+  # When `claude` runs inside code-server's integrated terminal, it spawns
+  # `code --force --install-extension anthropic.claude-code` as a subprocess
+  # check. Code-server's session-injected `code` shim closes its IPC stream
+  # prematurely for non-interactive callers, surfacing as
+  # ERR_STREAM_PREMATURE_CLOSE — Claude marks the IDE as unavailable and
+  # never attaches, leaving the extension panel blank.
+  #
+  # This wrapper sits in $HOME/.local/bin (which the bashrc puts ahead of
+  # the session shim's path), intercepts the extension-management flags,
+  # and routes them to `code-server`'s CLI — which handles them reliably
+  # for subprocess callers. Anything else passes through to the real `code`
+  # shim so `code .` etc. keep working in the integrated terminal.
+  mkdir -p /root/.local/bin
+  cat > /root/.local/bin/code << 'CODEWRAP'
+#!/bin/bash
+# Wrapper around code-server's `code` shim. See agentic.sh for the why.
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+# Intercept extension-management flags anywhere in args
+for arg in "$@"; do
+  case "$arg" in
+    --install-extension|--list-extensions|--uninstall-extension|--locate-extension|--show-versions)
+      # `--force` is a vscode-only flag; code-server's CLI rejects it. Strip it.
+      args=()
+      for a in "$@"; do
+        [[ "$a" == "--force" ]] || args+=("$a")
+      done
+      exec /usr/bin/code-server "${args[@]}"
+      ;;
+  esac
+done
+
+# Pass-through: find the next `code` in PATH that isn't us
+IFS=':' read -ra paths <<< "$PATH"
+for p in "${paths[@]}"; do
+  cand="$p/code"
+  if [[ -x "$cand" ]]; then
+    real_resolved="$(readlink -f "$cand" 2>/dev/null || echo "$cand")"
+    [[ "$real_resolved" == "$SELF" ]] && continue
+    exec "$cand" "$@"
+  fi
+done
+
+# No real code shim found — probably an SSH session, not the integrated terminal.
+echo "code: no shim available (not running inside code-server's integrated terminal)" >&2
+exit 127
+CODEWRAP
+  chmod +x /root/.local/bin/code
+
   systemctl enable --now code-server@root
 else
   echo ">>> Skipping code-server (opted out at deploy time)."

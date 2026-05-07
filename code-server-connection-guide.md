@@ -411,9 +411,23 @@ systemctl restart code-server@root      # so the running session picks it up
 
 Sideloaded extensions don't auto-update; repeat when Anthropic ships a new version.
 
-**Why Claude's own auto-install fails inside `claude /status`:** Claude Code tries `code --force --install-extension anthropic.claude-code` automatically when it detects an IDE. Code-server's `code` shim sometimes closes the IPC stream prematurely when invoked as a non-interactive child process, surfacing as `ERR_STREAM_PREMATURE_CLOSE`. The `code-server --install-extension` CLI is the more reliable invocation — that's what `agentic.sh` uses, and what you should use for manual installs.
+**Why Claude's own auto-install fails inside `claude /status`:** Claude Code tries `code --force --install-extension anthropic.claude-code` automatically when it detects an IDE. Code-server's session-injected `code` shim closes its IPC stream prematurely when invoked as a non-interactive subprocess, surfacing as `ERR_STREAM_PREMATURE_CLOSE`. The check half of the call (`--list-extensions`) hits the same wall, so Claude can't tell the extension is already installed, can't install it either, and gives up — marking the IDE as unavailable and skipping the IPC attach. The extension loads in code-server but never receives a session, so the *Claude Code* panel sits blank with just the title.
 
-The extension runs inside the code-server (now native LXC) extension host, which inherits the LXC's PATH. `claude` is on PATH, so the extension finds the binary and they communicate normally — no extra glue needed.
+**`agentic.sh` ships a small `code` wrapper at `/root/.local/bin/code`** that intercepts the extension-management flags (`--install-extension`, `--list-extensions`, `--uninstall-extension`, `--locate-extension`, `--show-versions`) and routes them to `code-server`'s CLI — which handles them reliably for subprocess callers. Anything else (`code .`, `code path/to/file`) passes through to the real session shim. The wrapper lands in `$HOME/.local/bin`, which the LXC's bashrc puts ahead of the session shim's path, so it wins for any subprocess Claude spawns. Effect: Claude's auto-install probe succeeds, IDE attach completes, the panel populates.
+
+**To apply the wrapper to an existing deploy** (one made before this change landed):
+
+```bash
+# In the LXC (pct enter or ssh):
+mkdir -p /root/.local/bin
+curl -fsSL https://raw.githubusercontent.com/imcmurray/proxmod-claude/main/agentic.sh \
+  | sed -n '/CODEWRAP/,/CODEWRAP/p' | sed '1d;$d' > /root/.local/bin/code
+chmod +x /root/.local/bin/code
+# Then close any open `claude` session, open a new integrated terminal in
+# code-server's browser tab, and run `claude /status` again.
+```
+
+The extension runs inside code-server's extension host, which (with the native install in §10.4) inherits the LXC's PATH. `claude` is on PATH, so the extension finds the binary and they communicate normally — no extra glue needed.
 
 ### 10.6 Quick decision matrix
 
