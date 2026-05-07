@@ -368,6 +368,7 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Python policy: venv-required | `CLAUDE.md` heredoc | Replaces upstream's `--break-system-packages` guidance with mandatory venvs |
 | Documented Docker build limitation | Provisioning script comment + README §6 | `docker compose build` cannot work inside the LXC due to a kernel/namespace issue with AppArmor; run-time is fine. Workarounds: build elsewhere and push, or use a separate Proxmox VM for builds. |
 | Code-server runs natively (not in Docker) | Provisioning script | Integrated terminal is the LXC shell — `claude`, `gh`, `lazygit`, etc. all on PATH for free. No `/`-mount, no double Claude install, no AppArmor-unconfined Docker layer for the editor. Updates via the apt repo the official installer adds, picked up by the existing weekly cron. |
+| Anthropic Claude Code IDE extension auto-installed | Provisioning script | `code-server --install-extension anthropic.claude-code` runs before the service starts, so the extension is active on first load and `claude /status` shows IDE connected. Failure is non-fatal (warning + log to `/tmp/cs-ext-install.log` inside the LXC); sideload steps in the connection guide §10.5. |
 
 ---
 

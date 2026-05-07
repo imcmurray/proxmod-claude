@@ -605,6 +605,22 @@ CSCONFIG
 # Password is in clear text in this file — restrict to root only.
 chmod 600 /root/.config/code-server/config.yaml
 
+echo ">>> Installing Anthropic Claude Code IDE extension into code-server..."
+# Install before the service is enabled so the first session has it active
+# without needing a window reload. Extensions land in
+# /root/.local/share/code-server/extensions/ (persistent on the LXC disk).
+# Tolerant of failure — the extension is non-essential (Claude works in TUI
+# without it) and Open VSX availability for vendor-published extensions can
+# vary. When this auto-install fails, the IDE-integration error in
+# `claude /status` is the only user-visible consequence; sideload the VSIX
+# from the Microsoft Marketplace via code-server's Extensions panel to fix.
+if code-server --install-extension anthropic.claude-code >/tmp/cs-ext-install.log 2>&1; then
+  echo "    Claude Code IDE extension installed"
+else
+  echo "    ! Claude Code extension auto-install failed — see /tmp/cs-ext-install.log"
+  echo "    ! Sideload manually from the code-server Extensions panel if needed."
+fi
+
 systemctl enable --now code-server@root
 
 cd /docker/watchtower && docker compose up -d

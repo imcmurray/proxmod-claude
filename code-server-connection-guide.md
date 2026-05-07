@@ -394,14 +394,26 @@ If you're on an older Docker-based deploy and want to migrate, the steps are in 
 
 Anthropic publishes an official VS Code extension for Claude Code that adds an inline panel, "send selection to Claude," diff previews, etc. It's a nicer UX than driving the TUI in a terminal.
 
-**To check if it's installable in your code-server:**
-1. In code-server, `Ctrl+Shift+X`, search `claude code`.
-2. If Anthropic's extension shows up on Open VSX, install it.
-3. If it doesn't, you can sideload the `.vsix`: download from [marketplace.visualstudio.com](https://marketplace.visualstudio.com/) on your laptop → Extensions panel → `…` → *Install from VSIX…*.
+**On current `agentic.sh` deploys, this is auto-installed.** The provisioning step runs `code-server --install-extension anthropic.claude-code` after code-server is on disk and before its systemd unit starts, so the extension is active on first browser load. If the auto-install failed (Open VSX availability for vendor-published extensions can vary) the warning is in the provision log — sideload manually as below.
 
-The extension talks to the same `claude` binary on PATH, so all the §10.1 architecture caveats still apply: the extension running in code-server will look for `claude` *inside the container's PATH*, which means you still need §10.3 (install Claude in the container) or §10.4 (run code-server natively) for it to find the binary.
+**Manual install (existing deploy, or auto-install failed):**
 
-If you've installed Claude in the container per §10.3, the extension generally Just Works — it spawns `claude` as a subprocess of the extension host, which inherits the container's PATH.
+```bash
+# In the LXC (pct enter or ssh):
+code-server --install-extension anthropic.claude-code
+systemctl restart code-server@root      # so the running session picks it up
+```
+
+**Sideload from a VSIX (if Open VSX doesn't have it):**
+1. On your laptop, find the extension on [marketplace.visualstudio.com](https://marketplace.visualstudio.com/) (`Anthropic.claude-code`).
+2. Construct the VSIX URL: `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/Anthropic/vsextensions/claude-code/<VERSION>/vspackage` (substitute the version from the marketplace page; the response is a `.vsix`).
+3. In code-server, *Extensions panel → `…` menu → Install from VSIX…* and upload the file. Reload the window.
+
+Sideloaded extensions don't auto-update; repeat when Anthropic ships a new version.
+
+**Why Claude's own auto-install fails inside `claude /status`:** Claude Code tries `code --force --install-extension anthropic.claude-code` automatically when it detects an IDE. Code-server's `code` shim sometimes closes the IPC stream prematurely when invoked as a non-interactive child process, surfacing as `ERR_STREAM_PREMATURE_CLOSE`. The `code-server --install-extension` CLI is the more reliable invocation — that's what `agentic.sh` uses, and what you should use for manual installs.
+
+The extension runs inside the code-server (now native LXC) extension host, which inherits the LXC's PATH. `claude` is on PATH, so the extension finds the binary and they communicate normally — no extra glue needed.
 
 ### 10.6 Quick decision matrix
 
