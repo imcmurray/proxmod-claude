@@ -153,7 +153,7 @@ Not relevant if you're on the same LAN as your Proxmox host. Tunnels route throu
 |----------|--------|--------------|
 | **SSH local port forward** | None — works today | `ssh -L 8443:localhost:8443 root@<lxc-ip>`, then open `https://localhost:8443` (still self-signed warning, but localhost is at least a secure context for the webview-API). Encrypted twice (SSH + TLS). |
 | **Tailscale** | 5 min | Install Tailscale on the LXC (`curl -fsSL https://tailscale.com/install.sh \| sh && tailscale up`) and on your laptop. The LXC becomes reachable at its tailnet hostname/IP from anywhere. Still HTTP, but only over your private overlay — that's fine. |
-| **Cloudflare Tunnel** | 15 min | `cloudflared` in a container, point a Cloudflare hostname at it, optionally enforce Cloudflare Access (email/SSO) in front. Public DNS, no port-forwarding, free for personal use. |
+| **Cloudflare Tunnel** | 15 min | `cloudflared` in a container, point a Cloudflare hostname at it, optionally enforce Cloudflare Access (email/SSO) in front. Public DNS, no port-forwarding, free for personal use. **Critical:** with code-server's self-signed cert (the default), the tunnel ingress rule must have **No TLS Verify: ON** (Zero-Trust dashboard) or `originRequest: { noTLSVerify: true }` (CLI config). Skipping this gives a 502 Bad Gateway with no useful logs — cloudflared is rejecting the origin's untrusted cert. |
 | **Reverse proxy with TLS** | 30 min | Caddy or nginx in front, real cert via Let's Encrypt or your Cloudflare origin cert. Combine with Cloudflare Tunnel or expose only on LAN. |
 
 For the LXC built by `agentic.sh`, the lightest realistic setup that works from anywhere is **Tailscale**, because it doesn't require any DNS, certs, or public exposure — and the Proxmox host can join the same tailnet so you can `pct enter` from a coffee shop too.
@@ -225,6 +225,27 @@ Technically yes — multiple browsers can hit `:8443` with the same password and
 
 ### "My laptop's VS Code shows two installs in the LXC: `code-server` and `.vscode-server` — one is bigger"
 Normal. They are independent products living side-by-side. Removing `~/.vscode-server/` only affects Remote-SSH; code-server itself is unaffected. Removing the code-server install (`apt remove code-server` on a native deploy, or `docker compose down && rm -rf /docker/code-server` on an older Docker deploy) only affects the browser editor; Remote-SSH is unaffected.
+
+### "Cloudflare gives me a 502 Bad Gateway when I hit my tunnel hostname"
+The tunnel can reach Cloudflare's edge, but cloudflared can't complete the request to your origin. With code-server's self-signed cert (the default), the cause is almost always **TLS validation on the origin connection**: cloudflared connects to `https://localhost:8443`, the cert isn't publicly trusted, validation fails, Cloudflare returns 502.
+
+Fix: enable **No TLS Verify** on the public hostname.
+
+- *Zero-Trust dashboard:* Networks → Tunnels → your tunnel → Configure → Public Hostname → edit → **Additional application settings → TLS → No TLS Verify: ON**. Save. No restart needed.
+- *CLI tunnels (`/etc/cloudflared/config.yml`):*
+  ```yaml
+  ingress:
+    - hostname: code.<your-domain>
+      service: https://localhost:8443
+      originRequest:
+        noTLSVerify: true
+    - service: http_status:404
+  ```
+  Then `systemctl restart cloudflared`.
+
+Sanity check the origin first with `curl -k https://<lxc-ip>:8443/healthz` from a LAN machine. If you get `{"status":"alive",...}`, code-server is fine and the issue is purely between Cloudflare and the origin.
+
+If you're using a Cloudflare-issued **origin certificate** instead of code-server's self-signed one (so Cloudflare *does* trust the cert), you can leave No TLS Verify off — but that's a more involved setup; the no-verify path is what `agentic.sh`'s default cert posture is built around.
 
 ---
 
