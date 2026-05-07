@@ -16,7 +16,7 @@ A privileged Ubuntu 24.04 LXC container with:
 - Pre-installed plugins: frontend-design, code-review, commit-commands, security-guidance, context7, webapp-testing, superpowers
 - Languages: Node.js 22 LTS, Python 3.12 (with `uv`), Go (latest), Rust (latest)
 - Docker + Compose running inside the LXC, with Watchtower auto-updating containers
-- Code-server (browser VS Code) on port 8443 with a randomly-generated password
+- Code-server (browser VS Code) on port 8443 with a randomly-generated password — runs natively as a systemd service so the integrated terminal is the LXC shell, with `claude` already on PATH
 - **Always-installed extras** (no auth burden): `lazygit`, `uv`, `direnv` (with bash hook), `httpie`, `rclone`
 - **Optional cloud/deploy CLIs** (chosen via prompt at deploy time): `gh`, `railway`, `wrangler`, `aws`, `flyctl`, `vercel`, `doctl` — defaults to `gh railway wrangler`, type `all` or `none` to override
 - ripgrep / fd / fzf / bat / jq / postgres-client / redis-tools / sqlite3 / Playwright
@@ -30,6 +30,7 @@ A privileged Ubuntu 24.04 LXC container with:
 | [`agentic.sh`](./agentic.sh) | The deployer. Run it on the Proxmox host. |
 | [`README.md`](./README.md) | This file — the walkthrough. |
 | [`claude-code-container-workflow.md`](./claude-code-container-workflow.md) | Day-to-day guide once the container exists. |
+| [`code-server-connection-guide.md`](./code-server-connection-guide.md) | What code-server is, how it differs from Microsoft's Remote-SSH, and how to connect from VS Code, Code-OSS, or a browser. |
 | [`proxmox-silent-freeze-guide.md`](./proxmox-silent-freeze-guide.md) | Diagnostic runbook if a Proxmox host randomly freezes. Reusable on other hosts. |
 
 ---
@@ -134,7 +135,7 @@ Total time: ~10–15 minutes depending on network.
 
   Code-server password (save now — randomly generated, only shown here):
     aB3xK9pL2mN7qR4tY8wZ
-    (also retrievable later via: pct exec 112 -- grep PASSWORD /docker/code-server/docker-compose.yml)
+    (also retrievable later via: pct exec 112 -- grep '^password:' /root/.config/code-server/config.yaml)
 ```
 
 **Copy that password somewhere safe before scrolling.**
@@ -235,18 +236,41 @@ Older deploys missed the `python-is-python3` package. Already fixed in `agentic.
 apt-get update && apt-get install -y python-is-python3
 ```
 
+### Migrating an existing Docker-based code-server deploy to native
+Older deploys ran code-server as a Docker container under `/docker/code-server/`. Newer deploys run it natively via systemd. The native version puts the integrated terminal directly inside the LXC, so `claude` is on PATH for free (the Docker version required workarounds — see the connection guide §10). To migrate without a full reinstall:
+
+```bash
+# Inside the LXC. Snapshot first from the Proxmox host: pct snapshot <CT_ID> pre-cs-native
+OLD_PWD=$(grep -oP 'PASSWORD: \K\S+' /docker/code-server/docker-compose.yml 2>/dev/null || openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | cut -c1-20)
+cd /docker/code-server && docker compose down && cd / && rm -rf /docker/code-server
+
+curl -fsSL https://code-server.dev/install.sh | sh
+mkdir -p /root/.config/code-server
+cat > /root/.config/code-server/config.yaml << EOF
+bind-addr: 0.0.0.0:8443
+auth: password
+password: ${OLD_PWD}
+cert: false
+EOF
+chmod 600 /root/.config/code-server/config.yaml
+systemctl enable --now code-server@root
+systemctl is-active code-server@root      # should print: active
+```
+
+Browser refresh; same URL, same password, but now the terminal is the LXC and `claude` works. Roll back via `pct rollback <CT_ID> pre-cs-native` if anything goes wrong.
+
 ### Code-server forgot the password / want to rotate it
-The deploy summary is the only place the original is shown. To recover or rotate:
+The deploy summary is the only place the original is shown. Code-server runs as a native systemd service and reads its password from `/root/.config/code-server/config.yaml` (chmod 600, root-only):
 
 ```bash
 # Recover existing
-pct exec <CT_ID> -- grep PASSWORD /docker/code-server/docker-compose.yml
+pct exec <CT_ID> -- grep '^password:' /root/.config/code-server/config.yaml
 
 # Rotate to a new random one
 NEW_PWD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20)
 echo "New password: $NEW_PWD"
-pct exec <CT_ID> -- sed -i "s|PASSWORD: .*|PASSWORD: ${NEW_PWD}|" /docker/code-server/docker-compose.yml
-pct exec <CT_ID> -- bash -c "cd /docker/code-server && docker compose up -d --force-recreate"
+pct exec <CT_ID> -- sed -i "s|^password:.*|password: ${NEW_PWD}|" /root/.config/code-server/config.yaml
+pct exec <CT_ID> -- systemctl restart code-server@root
 ```
 
 ### Proxmox host itself randomly freezes / drops off network
@@ -343,6 +367,7 @@ This repo's `agentic.sh` includes these patches over the upstream version:
 | Always-installed extras | Provisioning script | `lazygit`, `uv`, `direnv` (+ bash hook), `httpie`, `rclone` |
 | Python policy: venv-required | `CLAUDE.md` heredoc | Replaces upstream's `--break-system-packages` guidance with mandatory venvs |
 | Documented Docker build limitation | Provisioning script comment + README §6 | `docker compose build` cannot work inside the LXC due to a kernel/namespace issue with AppArmor; run-time is fine. Workarounds: build elsewhere and push, or use a separate Proxmox VM for builds. |
+| Code-server runs natively (not in Docker) | Provisioning script | Integrated terminal is the LXC shell — `claude`, `gh`, `lazygit`, etc. all on PATH for free. No `/`-mount, no double Claude install, no AppArmor-unconfined Docker layer for the editor. Updates via the apt repo the official installer adds, picked up by the existing weekly cron. |
 
 ---
 

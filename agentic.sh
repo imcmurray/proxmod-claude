@@ -589,29 +589,25 @@ services:
       - apparmor=unconfined
 DCOMPOSE
 
-mkdir -p /docker/code-server
-cat > /docker/code-server/docker-compose.yml << 'DCOMPOSE2'
-services:
-  code-server:
-    image: lscr.io/linuxserver/code-server:latest
-    container_name: code-server
-    restart: unless-stopped
-    environment:
-      PUID: "0"
-      PGID: "0"
-      TZ: America/New_York
-      PASSWORD: Passw0rd!
-    volumes:
-      - ./config:/config
-      - /:/config/workspace
-    ports:
-      - 8443:8443
-    security_opt:
-      - apparmor=unconfined
-DCOMPOSE2
+echo ">>> Installing code-server (native, runs as root via systemd)..."
+# Native install instead of Docker so the integrated terminal IS the LXC shell —
+# claude / gh / lazygit / docker / etc. are all on PATH with zero glue. Updates
+# arrive via the apt repo the installer adds, picked up by the weekly cron below.
+curl -fsSL https://code-server.dev/install.sh | sh
+
+mkdir -p /root/.config/code-server
+cat > /root/.config/code-server/config.yaml << 'CSCONFIG'
+bind-addr: 0.0.0.0:8443
+auth: password
+password: PLACEHOLDER_CS_PWD
+cert: false
+CSCONFIG
+# Password is in clear text in this file — restrict to root only.
+chmod 600 /root/.config/code-server/config.yaml
+
+systemctl enable --now code-server@root
 
 cd /docker/watchtower && docker compose up -d
-cd /docker/code-server && docker compose up -d
 
 echo ">>> Setting up auto-update cron..."
 cat > /etc/cron.d/system-update << 'CRON'
@@ -670,6 +666,8 @@ PROVISION_EOF
   pct exec "$CT_ID" -- bash -lc "command -v claude" &>/dev/null || missing+=("claude")
   pct exec "$CT_ID" -- bash -lc "command -v node"   &>/dev/null || missing+=("node")
   pct exec "$CT_ID" -- bash -lc "command -v docker" &>/dev/null || missing+=("docker")
+  pct exec "$CT_ID" -- bash -lc "command -v code-server" &>/dev/null || missing+=("code-server")
+  pct exec "$CT_ID" -- systemctl is-active --quiet code-server@root || missing+=("code-server@root (service)")
   pct exec "$CT_ID" -- test -d /project                          || missing+=("/project")
   pct exec "$CT_ID" -- test -f /root/.claude/settings.json       || missing+=("~/.claude/settings.json")
 
@@ -681,8 +679,8 @@ PROVISION_EOF
   # Replace the placeholder code-server password with the random one we generated.
   # CT_CS_PWD is alphanumeric only, so sed delimiter and shell expansion are safe.
   info "Setting random code-server password..."
-  pct exec "$CT_ID" -- sed -i "s|PASSWORD: Passw0rd!|PASSWORD: ${CT_CS_PWD}|" /docker/code-server/docker-compose.yml
-  pct exec "$CT_ID" -- bash -c "cd /docker/code-server && docker compose up -d --force-recreate" >/dev/null 2>&1
+  pct exec "$CT_ID" -- sed -i "s|password: PLACEHOLDER_CS_PWD|password: ${CT_CS_PWD}|" /root/.config/code-server/config.yaml
+  pct exec "$CT_ID" -- systemctl restart code-server@root >/dev/null 2>&1
   success "Code-server password set."
 
   rm -f /tmp/provision-${CT_ID}.sh
@@ -712,7 +710,7 @@ print_summary() {
   echo ""
   echo -e "  ${BOLD}${YELLOW}Code-server password (save now — randomly generated, only shown here):${NC}"
   echo -e "    ${BOLD}${CT_CS_PWD}${NC}"
-  echo -e "    ${YELLOW}(also retrievable later via: pct exec $CT_ID -- grep PASSWORD /docker/code-server/docker-compose.yml)${NC}"
+  echo -e "    ${YELLOW}(also retrievable later via: pct exec $CT_ID -- grep '^password:' /root/.config/code-server/config.yaml)${NC}"
   echo ""
   echo -e "  ${BOLD}Start Claude Code:${NC}"
   echo -e "    ${CYAN}claude${NC}    (shell auto-cd's to /project on login)"

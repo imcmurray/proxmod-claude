@@ -1,0 +1,415 @@
+# code-server — what it is and how to connect to it from your home PC
+
+`agentic.sh` deploys [code-server](https://github.com/coder/code-server) inside the LXC, listening on port `8443`. This guide explains what that actually means, why your local VS Code or Code-OSS doesn't "connect to it" the way you might expect, and the realistic ways to use the LXC's editing environment from your laptop.
+
+Read [§1 What it is](#1-what-code-server-actually-is) first — most of the friction people hit comes from misreading what code-server is for.
+
+---
+
+## 1. What code-server actually is
+
+**code-server is full VS Code, running on the server, served to your browser.**
+
+- The editor, the integrated terminal, the language servers, the extension host — all of it runs inside the LXC.
+- Your browser is the UI. It paints pixels and forwards keystrokes. Nothing about your project lives on the device you're sitting at.
+- You open `http://<container-ip>:8443`, type the password from the deploy summary, and you're inside VS Code. That's the whole product.
+
+It is maintained by [Coder](https://coder.com/) and is **not** the same thing as Microsoft's "VS Code Server" (see §2).
+
+### Why this design exists
+
+| Goal | What code-server gives you |
+|------|----------------------------|
+| Edit on a Chromebook / iPad / phone | Full IDE in any modern browser |
+| Heavy compile workloads on beefy hardware | LXC on your home server has the CPU; your laptop doesn't need it |
+| Persistent dev environment | Container keeps running; close laptop, open phone, pick up exactly where you left off |
+| Single source of truth | One filesystem, one set of extensions, one shell history — no syncing |
+
+### What it is NOT
+
+- It is **not** a way to "remote into" your laptop's VS Code.
+- It is **not** Microsoft's official VS Code Server (the thing Remote-SSH installs).
+- It is **not** a tunnel. It's a web server on port 8443.
+- It does **not** ship with the proprietary Microsoft Marketplace — it uses [Open VSX](https://open-vsx.org/) (see §6).
+
+---
+
+## 2. The naming collision (read this before searching the web)
+
+There are **three** different "VS-Code-on-a-server" products, and they are constantly conflated in tutorials and Reddit threads:
+
+| Name | Made by | What it is | How you reach it |
+|------|---------|------------|------------------|
+| **code-server** | Coder | Full VS Code, served as a web app on a port | Browser → `http://host:8443` |
+| **VS Code Server** (a.k.a. Remote-SSH server) | Microsoft | Headless VS Code backend that the **Remote-SSH** extension auto-installs into a remote machine over SSH | Local VS Code app → "Connect to Host" |
+| **openvscode-server** | Gitpod | Fork of code-server with different defaults | Browser, similar to code-server |
+
+`agentic.sh` installs **code-server**. If a guide tells you to install the "Remote-SSH" extension and click "Connect to Host" to use it — that guide is talking about Microsoft's product, not code-server, and the workflow is genuinely different. See §4.B for how Remote-SSH fits in here (it works, but it isn't using code-server).
+
+---
+
+## 3. How code-server is running in this LXC
+
+Set up by the provisioning step of `agentic.sh`:
+
+| Detail | Value |
+|--------|-------|
+| Process model | Native systemd service (`code-server@root`) — *not* a Docker container |
+| Config file | `/root/.config/code-server/config.yaml` (chmod 600) |
+| Port | `8443` (bound to `0.0.0.0`) |
+| Auth | Single password, randomly generated at deploy |
+| Workspace | LXC's filesystem directly; default folder is `/root/`, switch to `/project/<name>` via *File → Open Folder* |
+| Terminal | Integrated terminal *is* the LXC shell — `claude`, `gh`, `docker`, `lazygit`, `uv`, etc. on PATH automatically |
+| Updates | Picked up via the apt repo added by code-server's installer — runs through the existing weekly cron |
+| TLS | **None** — plain HTTP. Fine for LAN, never expose raw to the internet |
+
+> **Older deploys ran code-server in a Docker container** (`/docker/code-server/`). If you're on one of those, see the [migration note in the README troubleshooting section](./README.md#migrating-an-existing-docker-based-code-server-deploy-to-native), or ignore it — the Docker version still works, just with the architectural caveats spelled out in §10.
+
+Recover the password if you didn't save it:
+
+```bash
+pct exec <CT_ID> -- grep '^password:' /root/.config/code-server/config.yaml
+```
+
+Rotate it (from the Proxmox host):
+
+```bash
+NEW_PWD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20)
+echo "New password: $NEW_PWD"
+pct exec <CT_ID> -- sed -i "s|^password:.*|password: ${NEW_PWD}|" /root/.config/code-server/config.yaml
+pct exec <CT_ID> -- systemctl restart code-server@root
+```
+
+---
+
+## 4. Four ways to "use" the LXC's editor from your home PC
+
+### 4.A — Browser (the canonical way; this is what code-server is *for*)
+
+```
+http://<container-ip>:8443
+```
+
+Type the password. You're done. This is the path of least resistance and the one Coder designed code-server around.
+
+**Make it feel like an app (PWA install):**
+- Chrome / Edge / Brave: address bar → install icon → *Install code-server*.
+- Firefox doesn't currently support PWA install on desktop, but the page works fine in a regular tab.
+
+After install you get a dock/taskbar icon, no browser chrome, its own window, and `Ctrl+W` won't close the tab on you.
+
+**Pros:** Zero local config. Works from any device. Survives laptop reboots. Same environment from your phone in a pinch.
+**Cons:** Some keybindings collide with the browser (`Ctrl+W`, `Ctrl+N`, `Ctrl+Shift+T`) — PWA mode largely fixes this. No native OS integration (drag-and-drop files from your local file manager doesn't work the way it does in desktop VS Code).
+
+### 4.B — Microsoft VS Code (desktop) via **Remote-SSH** — *not* using code-server
+
+This is the option people usually mean when they say "connect my VS Code to it." It works, but it bypasses code-server entirely.
+
+**What actually happens:** the Remote-SSH extension SSHes into the LXC, downloads Microsoft's *VS Code Server* binary into `~/.vscode-server/`, runs it there, and tunnels the UI back to your local VS Code window over SSH. It does not touch the code-server container on port 8443.
+
+**Setup:**
+
+1. On your laptop, install [Visual Studio Code](https://code.visualstudio.com/) (the official Microsoft build — the open-source builds don't include this extension; see §4.C).
+2. Install the **Remote - SSH** extension (`ms-vscode-remote.remote-ssh`).
+3. Make sure SSH key auth into the LXC works from your terminal first:
+   ```bash
+   ssh root@<container-ip>     # must succeed without a password prompt
+   ```
+   If not, see [`README.md` §4c](./README.md) for hardening + key install.
+4. In VS Code: `F1` → **Remote-SSH: Connect to Host…** → `root@<container-ip>` → it installs the server in the background (~30 sec first time) → new window opens, attached to the LXC.
+5. `File → Open Folder…` → `/project/<your-project>`.
+
+**Pros:** Native VS Code keybindings, native OS integration, official Microsoft Marketplace works (so Copilot, proprietary C# extension, etc. are available). Excellent latency.
+**Cons:** Requires the official Microsoft build of VS Code (not Code-OSS, not VSCodium). Two parallel server installs in the LXC (code-server's container *and* `~/.vscode-server/`) — they don't conflict but they both consume disk.
+
+### 4.C — Code-OSS / VSCodium via **Open Remote - SSH** — *not* using code-server either
+
+Microsoft's Remote-SSH extension is restricted to the official VS Code build. If you run Arch's `code` (Code-OSS), `vscodium`, or any other libre rebuild, you can't install it.
+
+The community workaround is the [`Open Remote - SSH`](https://open-vsx.org/extension/jeanp413/open-remote-ssh) extension by `jeanp413`, available on Open VSX (which Code-OSS / VSCodium ship by default).
+
+**Setup:**
+
+1. Install Code-OSS or VSCodium (Code-OSS is in `extra/` on Arch; VSCodium has its own repos).
+2. Install the **Open Remote - SSH** extension (`jeanp413.open-remote-ssh`).
+3. SSH key auth into the LXC must already work (same prerequisite as 4.B).
+4. `F1` → **Remote-SSH: Connect to Host…** → `root@<container-ip>`. The extension installs `openvscode-server` (Gitpod's fork) into the LXC instead of Microsoft's proprietary server.
+5. `File → Open Folder…` → `/project/<your-project>`.
+
+**Pros:** Works with the libre VS Code builds. Same UX as 4.B once connected. Open VSX marketplace.
+**Cons:** No Microsoft Marketplace, so no GitHub Copilot, no proprietary remote-development pack, etc. Slightly less polished than Microsoft's first-party extension. A *third* server install in the LXC.
+
+### 4.D — VS Code "Remote Tunnels" — different mechanism, mentioned for completeness
+
+Not relevant if you're on the same LAN as your Proxmox host. Tunnels route through Microsoft's infrastructure and require a GitHub login on both ends. Useful only if you want to reach the LXC from outside your network without setting up your own tunnel/VPN. Most users should pick §5 instead.
+
+---
+
+## 5. Reaching the LXC from outside your home network
+
+`http://<container-ip>:8443` is plain HTTP on a private IP. **Never** port-forward 8443 to the public internet — code-server has only a single password, no rate limiting, and your traffic would be in the clear. Pick one:
+
+| Approach | Effort | What you get |
+|----------|--------|--------------|
+| **SSH local port forward** | None — works today | `ssh -L 8443:localhost:8443 root@<lxc-ip>`, then open `http://localhost:8443`. Encrypted, no extra services. |
+| **Tailscale** | 5 min | Install Tailscale on the LXC (`curl -fsSL https://tailscale.com/install.sh \| sh && tailscale up`) and on your laptop. The LXC becomes reachable at its tailnet hostname/IP from anywhere. Still HTTP, but only over your private overlay — that's fine. |
+| **Cloudflare Tunnel** | 15 min | `cloudflared` in a container, point a Cloudflare hostname at it, optionally enforce Cloudflare Access (email/SSO) in front. Public DNS, no port-forwarding, free for personal use. |
+| **Reverse proxy with TLS** | 30 min | Caddy or nginx in front, real cert via Let's Encrypt or your Cloudflare origin cert. Combine with Cloudflare Tunnel or expose only on LAN. |
+
+For the LXC built by `agentic.sh`, the lightest realistic setup that works from anywhere is **Tailscale**, because it doesn't require any DNS, certs, or public exposure — and the Proxmox host can join the same tailnet so you can `pct enter` from a coffee shop too.
+
+---
+
+## 6. Extensions: Open VSX vs. Microsoft Marketplace
+
+code-server uses [Open VSX](https://open-vsx.org/) for extensions, **not** Microsoft's Marketplace. This is a Microsoft licensing decision, not a code-server limitation: only Microsoft's official builds are allowed to query Microsoft's Marketplace.
+
+**What this means in practice:**
+
+| Extension | On Open VSX? | Notes |
+|-----------|--------------|-------|
+| Most popular open-source extensions | Yes | Python, ESLint, Prettier, Vim, GitLens, Docker, language packs |
+| GitHub Copilot | **No** | Microsoft-published; only available in official VS Code |
+| Microsoft C# (`ms-dotnettools.csharp`) | **No** | Same reason |
+| Microsoft Pylance | **No** | Same reason. The OSS Python extension still works for most things |
+| Anthropic / Claude extensions | Varies | Check Open VSX search before assuming |
+| Most theme extensions | Yes | Themes are usually fine |
+
+**To install:** in the running code-server, `Ctrl+Shift+X`, search, install. It queries Open VSX automatically.
+
+**To install a `.vsix` not on Open VSX manually:** Extensions panel → `…` menu → *Install from VSIX…* → upload the file. This sidesteps the marketplace but you take on responsibility for updates.
+
+If your workflow depends on Copilot or a proprietary Microsoft extension, that's a strong argument for §4.B (Microsoft VS Code + Remote-SSH) over the browser approach.
+
+---
+
+## 7. Settings, themes, dotfiles
+
+code-server stores user settings in the container at:
+
+```
+/root/.local/share/code-server/User/settings.json
+/root/.local/share/code-server/User/keybindings.json
+/root/.local/share/code-server/extensions/
+```
+
+These persist across container restarts because the code-server compose file mounts the config directory as a volume. They do **not** sync with your laptop's local VS Code automatically.
+
+**To carry settings across machines:**
+
+- *Manual:* commit `settings.json` and `keybindings.json` into a dotfiles repo and `ln -s` them into place after a fresh deploy.
+- *Settings Sync (built-in):* works in code-server if you sign in with a GitHub or Microsoft account. Sync is independent of code-server vs. local-VS-Code — your synced settings will follow you between either.
+- *`extensions.json` per workspace:* drop a `.vscode/extensions.json` in `/project/<name>/` listing recommended extensions; code-server prompts to install them when you open the folder.
+
+---
+
+## 8. Common gotchas
+
+### "I clicked Remote-SSH: Connect to Host but it's installing something — is this code-server?"
+No. That's Microsoft's VS Code Server (or `openvscode-server` if you used `Open Remote - SSH`) being installed alongside code-server. Both can coexist in the LXC. Disk-wise it's another ~200 MB under `~/.vscode-server/` or `~/.vscodium-server/`.
+
+### "Why is `code` on the command line opening the wrong thing?"
+Inside the LXC, `code` is the code-server CLI. `code .` from the LXC's terminal will *not* open your laptop's VS Code — it tries to open a code-server window, which doesn't make sense from a non-browser context. From a Remote-SSH session your local VS Code remaps `code` to do the right thing automatically.
+
+### "Copilot isn't installable"
+Correct — see §6. Either use Microsoft VS Code via §4.B, or accept the Open VSX-only constraint.
+
+### "The browser ate my Ctrl+W / Ctrl+Shift+N keybinding"
+Install code-server as a PWA (§4.A). PWA mode reclaims most of these. The few that the OS itself reserves (`Alt+F4` on Windows, etc.) are unavoidable.
+
+### "I'm getting a self-signed cert warning"
+You shouldn't be — the default deploy is plain HTTP on `:8443`, not HTTPS. If you see a cert warning, you put a reverse proxy in front and the cert is misconfigured, or you enabled code-server's built-in self-signed mode. Check `/root/.config/code-server/config.yaml` (`cert:` should be `false`) on a native deploy, or `/docker/code-server/docker-compose.yml` on an older Docker-based deploy.
+
+### "Can two people use it at once?"
+Technically yes — multiple browsers can hit `:8443` with the same password and edit the same files. There is no per-user state, no operational transform, no Live-Share-style cursors. It is **single-tenant by design**. If you need real multi-user, look at [Coder](https://coder.com/) (the company's commercial product) or Live Share with §4.B.
+
+### "My laptop's VS Code shows two installs in the LXC: `code-server` and `.vscode-server` — one is bigger"
+Normal. They are independent products living side-by-side. Removing `~/.vscode-server/` only affects Remote-SSH; code-server itself is unaffected. Removing the code-server install (`apt remove code-server` on a native deploy, or `docker compose down && rm -rf /docker/code-server` on an older Docker deploy) only affects the browser editor; Remote-SSH is unaffected.
+
+---
+
+## 9. Recommended setup for this LXC
+
+Picking the simplest path that works for most people:
+
+1. **Daily editing:** open `http://<lxc-ip>:8443` in Chrome → install as PWA → pin to dock/taskbar. Use it like a native app.
+2. **When away from home:** add Tailscale to the LXC and your laptop (§5). The same `:8443` URL keeps working over the tailnet.
+3. **When you need Copilot or a Microsoft-only extension:** install the official Microsoft VS Code on your laptop and use Remote-SSH (§4.B) for those sessions. Both tools point at the same `/project/` filesystem inside the LXC, so your work is unified — only the editor process differs.
+4. **For Code-OSS / VSCodium users on Linux:** §4.A (browser) is the primary path. §4.C (Open Remote - SSH) is the secondary path if you really want a desktop window.
+
+The browser is not a compromise — it's the thing code-server was built to be. The desktop-app paths exist for the cases where you specifically need a Microsoft Marketplace extension, not as a general upgrade.
+
+---
+
+## 10. Using Claude Code from inside code-server
+
+**On a current `agentic.sh` deploy this is a non-event:** code-server runs natively in the LXC, so the integrated terminal is the LXC shell. Open code-server, `Ctrl+` ` to open the terminal, `cd /project/<thing> && claude`. That's it. `claude`, `gh`, `lazygit`, `docker`, `uv`, etc. are all on PATH because they were installed in the LXC and the terminal *is* the LXC.
+
+The Anthropic *Claude Code IDE* extension (§10.5) also Just Works for the same reason — the extension host inherits the LXC's PATH, finds `claude`, and is happy.
+
+The rest of this section exists for two situations:
+- **You're on an older Docker-based deploy** (linuxserver/code-server in `/docker/code-server/`). Migration steps are in the README; until you migrate, you'll hit the gotcha in §10.1 and want one of the workarounds in §10.3 / §10.4.
+- **You want to know how things fit together** so you can troubleshoot.
+
+If neither applies, skip to §10.5 for the optional VS Code extension and you're done.
+
+### 10.1 Why the older Docker-based deploy doesn't have `claude` on PATH
+
+What older `agentic.sh` deploys looked like:
+
+```
+Proxmox host
+└── LXC container (Ubuntu 24.04)
+    ├── /usr/local/bin/claude          ← Claude Code CLI lives here
+    ├── /root/.claude/                  ← auth, settings, plugins
+    ├── /project/                       ← your code
+    └── Docker daemon
+        └── code-server container (lscr.io/linuxserver/code-server)
+            ├── $HOME = /config         ← linuxserver convention
+            ├── /config/workspace/      ← bind-mount of the LXC's /
+            └── PATH does NOT include claude
+```
+
+(Current deploys collapse the bottom two layers — code-server runs as a systemd service in the LXC, so PATH and `$HOME` are the LXC's own.)
+
+Two important consequences:
+
+1. **The terminal inside code-server is a shell inside the Docker container, not inside the LXC.** Typing `claude` there will print `command not found` even though the binary exists in the LXC at `/usr/local/bin/claude`. The container has its own filesystem (Ubuntu base, but linuxserver's, not the LXC's) and its own PATH.
+
+2. **The LXC's filesystem is visible inside the container at `/config/workspace/`.** So from code-server's terminal:
+   - `/config/workspace/project/` is the LXC's `/project/`
+   - `/config/workspace/root/.claude/` is the LXC's `/root/.claude/` (with all its auth)
+   - `/config/workspace/usr/local/bin/claude` is the LXC's claude binary — but you can't just run it; it depends on libs / Node from the LXC's userspace.
+
+This is why "just run claude in the integrated terminal" doesn't work out of the box, and why three different fixes exist depending on what you're optimizing for.
+
+#### Scoping the workspace to `/project` only (recommended)
+
+By default `agentic.sh` mounts the LXC's `/` into the container at `/config/workspace`, so code-server's file explorer shows `/etc`, `/var`, `/usr`, everything. That's noisy and lets a misplaced Save edit a system path. To narrow it to just your code:
+
+```bash
+# In the LXC:
+sed -i 's|/:/config/workspace|/project:/config/workspace|' /docker/code-server/docker-compose.yml
+cd /docker/code-server && docker compose up -d --force-recreate
+```
+
+After this, the workspace root is `/project/` and the indirection in §10.1 collapses: `/config/workspace/foo/` is just `/project/foo/`. The §10.3 trick of symlinking `/config/workspace/root/.claude` for shared auth no longer works (because `/root/.claude` isn't in scope), so if you go this route, copy the auth in once instead:
+
+```bash
+# From the LXC, after scoping to /project:
+mkdir -p /docker/code-server/config/.claude
+cp -a /root/.claude/. /docker/code-server/config/.claude/
+# Then inside code-server's terminal:
+ln -sfn /config/.claude ~/.claude
+```
+
+The tradeoff: you lose easy in-editor access to `/docker/`, `/etc/`, `/tmp/provision-*.log`. For day-to-day editing that's a feature; for admin tasks, drop into a separate SSH session.
+
+### 10.2 Recommended: split-pane workflow (code-server for editing, SSH for `claude`)
+
+This is the lowest-friction pattern and the one I'd suggest unless you have a specific reason to want `claude` *inside* the code-server window.
+
+**Setup (once):**
+- Open `http://<lxc-ip>:8443` in your browser (or PWA — see §4.A) for editing.
+- Open a terminal app (or Windows Terminal / iTerm2 / etc.) on your laptop and `ssh root@<lxc-ip>`. That shell *is* the LXC, so `claude` works immediately.
+
+**Day-to-day:**
+- Browser window: edit files, browse the tree, use the source-control panel, run code-server's debugger, etc.
+- Terminal window: `cd /project/<thing> && claude` — Claude reads/writes files in `/project/`, code-server picks up the changes instantly because it's the same filesystem. Switch between the two with Alt+Tab.
+
+**Why this is the right default:**
+- Zero configuration. Works the moment the LXC is provisioned.
+- Claude's TUI is happier in a real terminal than in code-server's xterm.js (which has occasional rendering quirks for full-screen TUIs).
+- Auth, plugins, settings — all the state in `/root/.claude/` — is exactly the state Claude expects, with the binary it was installed against. No drift.
+- If Claude takes a long time on something, you can swap to the browser and keep editing other files in parallel without fighting for terminal focus.
+
+**On a Chromebook / iPad (no native SSH):** open a second code-server tab and run a real SSH client *inside* it via the [Remote Containers / SSH FS](https://open-vsx.org/) extensions, or use a web SSH like [`shellngn`](https://shellngn.com/) / [`Termius`](https://termius.com/). This gives you the dual-pane setup without leaving the browser.
+
+### 10.3 Make `claude` work in code-server's integrated terminal (Option A: install it inside the container)
+
+If you really want Claude in the code-server terminal — most often because you're on a tablet or kiosk and a second SSH window isn't practical — install Claude Code *inside* the code-server container.
+
+**One-shot install (lost on `docker compose up --force-recreate`):**
+
+```bash
+# Inside code-server's integrated terminal:
+curl -fsSL https://claude.ai/install.sh | bash
+exec $SHELL    # reload PATH so ~/.local/bin lands in it
+claude --version
+```
+
+The binary lands at `~/.local/bin/claude` which is `/config/.local/bin/claude` on the host (the linuxserver image makes `$HOME = /config`, and `/config` is a bind-mounted volume — so this *does* persist across normal restarts, but a `--force-recreate` on the volume would lose it depending on how the volume is set up).
+
+**Persistent install via linuxserver's `custom-cont-init.d`:**
+
+The linuxserver image runs any executable script under `/config/custom-cont-init.d/` once on container start. Use this to reinstall Claude automatically if the container is ever rebuilt:
+
+```bash
+# From the LXC (pct enter / ssh into the LXC, NOT code-server):
+mkdir -p /docker/code-server/config/custom-cont-init.d
+cat > /docker/code-server/config/custom-cont-init.d/01-install-claude.sh << 'EOF'
+#!/bin/bash
+set -e
+if ! command -v claude >/dev/null 2>&1; then
+  curl -fsSL https://claude.ai/install.sh | bash
+  ln -sf /config/.local/bin/claude /usr/local/bin/claude || true
+fi
+EOF
+chmod +x /docker/code-server/config/custom-cont-init.d/01-install-claude.sh
+
+# Restart the container so the init script runs:
+cd /docker/code-server && docker compose up -d --force-recreate
+```
+
+**Sharing auth with the LXC's Claude install** (so you don't have to log in twice):
+
+The LXC's `/root/.claude/` is visible inside the container at `/config/workspace/root/.claude/`. Symlink it into the container's `$HOME`:
+
+```bash
+# Inside code-server's terminal:
+ln -sfn /config/workspace/root/.claude ~/.claude
+```
+
+Now both `claude` invocations (the LXC one over SSH, and the in-container one in code-server's terminal) share the same auth, settings, and plugin set. Watch out: if both run simultaneously and try to write `~/.claude/projects/<hash>/` for the same project, you can get write conflicts. In practice this is rare because you usually only run one Claude session at a time.
+
+**Caveats:**
+- The linuxserver image's userland is not the same as the LXC's. Some things Claude wants (Node version, build tools for native MCPs) may differ. If a plugin works in the LXC but not in the container, that's why.
+- Container updates (Watchtower auto-updates linuxserver/code-server) won't break your Claude install because it's on the persistent volume — but a different base-image major version *might* break it. If `claude` stops working after a Watchtower update, rerun the install.
+
+### 10.4 Run code-server natively in the LXC (this is now the default)
+
+Current `agentic.sh` deploys do this automatically. The provisioning step runs:
+
+```bash
+curl -fsSL https://code-server.dev/install.sh | sh
+# writes /root/.config/code-server/config.yaml (chmod 600)
+systemctl enable --now code-server@root
+```
+
+The integrated terminal is the LXC shell, `claude` / `gh` / `docker` / `lazygit` / `uv` are all on PATH, `/project` is just `/project` with no `/config/workspace/` indirection, and there's exactly one Node, one PATH, one `~/.claude/`. Updates flow in via the apt repo the installer adds, picked up by the existing weekly `apt-get upgrade` cron.
+
+If you're on an older Docker-based deploy and want to migrate, the steps are in the [README troubleshooting section](./README.md#migrating-an-existing-docker-based-code-server-deploy-to-native).
+
+### 10.5 The "Claude Code IDE" VS Code extension
+
+Anthropic publishes an official VS Code extension for Claude Code that adds an inline panel, "send selection to Claude," diff previews, etc. It's a nicer UX than driving the TUI in a terminal.
+
+**To check if it's installable in your code-server:**
+1. In code-server, `Ctrl+Shift+X`, search `claude code`.
+2. If Anthropic's extension shows up on Open VSX, install it.
+3. If it doesn't, you can sideload the `.vsix`: download from [marketplace.visualstudio.com](https://marketplace.visualstudio.com/) on your laptop → Extensions panel → `…` → *Install from VSIX…*.
+
+The extension talks to the same `claude` binary on PATH, so all the §10.1 architecture caveats still apply: the extension running in code-server will look for `claude` *inside the container's PATH*, which means you still need §10.3 (install Claude in the container) or §10.4 (run code-server natively) for it to find the binary.
+
+If you've installed Claude in the container per §10.3, the extension generally Just Works — it spawns `claude` as a subprocess of the extension host, which inherits the container's PATH.
+
+### 10.6 Quick decision matrix
+
+| Your situation | Pick |
+|----------------|------|
+| Current `agentic.sh` deploy | §10.4 (already done) — open the integrated terminal and run `claude` |
+| Want a nicer in-editor UX than the TUI | §10.5 (Anthropic's VS Code extension, on top of §10.4) |
+| Already have an older Docker-based deploy and don't want to migrate yet | §10.2 (split-pane SSH) — zero changes, works today |
+| Older deploy, can't run a separate SSH session (tablet, etc.) | §10.3 (install Claude inside the container) |
+
+For new deploys there's nothing to choose — §10.4 is the path the script already takes, and `claude` is in the integrated terminal from minute one.
