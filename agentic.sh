@@ -118,8 +118,24 @@ get_config() {
     esac
   done
 
-  # Generate a random code-server web password (alphanumeric only, no shell-special chars)
-  CT_CS_PWD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20)
+  # Optional: code-server (browser VS Code on :8443). Default yes — it's the
+  # primary way most users interact with the LXC remotely. Skip with 'n' if you
+  # only want SSH/pct-enter access (saves ~200MB and an open port).
+  echo ""
+  read -rp "Install code-server (browser VS Code on port 8443)? [Y/n]: " CT_CS_REPLY
+  case "${CT_CS_REPLY:-Y}" in
+    [Yy]|[Yy][Ee][Ss]|"") CT_CODE_SERVER="yes" ;;
+    [Nn]|[Nn][Oo])        CT_CODE_SERVER="no"  ;;
+    *) error "Invalid response: '$CT_CS_REPLY'. Use Y or n." ;;
+  esac
+
+  # Generate a random code-server web password only if installing.
+  # Alphanumeric only — safe in shell expansion and sed.
+  if [[ "$CT_CODE_SERVER" == "yes" ]]; then
+    CT_CS_PWD=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20)
+  else
+    CT_CS_PWD=""
+  fi
 
   echo ""
   echo -e "${BOLD}Summary${NC}"
@@ -134,6 +150,7 @@ get_config() {
   echo "  Network:    $CT_IP"
   echo "  DNS:        $CT_DNS"
   echo "  CLIs:       ${CT_CLIS:-(none)}"
+  echo "  Code-server: $CT_CODE_SERVER (browser VS Code on :8443)"
   echo "  Extras:     lazygit, uv, direnv, httpie, rclone (always)"
   echo "─────────────────────────────────────────────────"
   echo ""
@@ -589,39 +606,44 @@ services:
       - apparmor=unconfined
 DCOMPOSE
 
-echo ">>> Installing code-server (native, runs as root via systemd)..."
-# Native install instead of Docker so the integrated terminal IS the LXC shell —
-# claude / gh / lazygit / docker / etc. are all on PATH with zero glue. Updates
-# arrive via the apt repo the installer adds, picked up by the weekly cron below.
-curl -fsSL https://code-server.dev/install.sh | sh
+INSTALL_CODE_SERVER="@@INSTALL_CODE_SERVER@@"
+if [[ "$INSTALL_CODE_SERVER" == "yes" ]]; then
+  echo ">>> Installing code-server (native, runs as root via systemd)..."
+  # Native install instead of Docker so the integrated terminal IS the LXC shell —
+  # claude / gh / lazygit / docker / etc. are all on PATH with zero glue. Updates
+  # arrive via the apt repo the installer adds, picked up by the weekly cron below.
+  curl -fsSL https://code-server.dev/install.sh | sh
 
-mkdir -p /root/.config/code-server
-cat > /root/.config/code-server/config.yaml << 'CSCONFIG'
+  mkdir -p /root/.config/code-server
+  cat > /root/.config/code-server/config.yaml << 'CSCONFIG'
 bind-addr: 0.0.0.0:8443
 auth: password
 password: PLACEHOLDER_CS_PWD
 cert: false
 CSCONFIG
-# Password is in clear text in this file — restrict to root only.
-chmod 600 /root/.config/code-server/config.yaml
+  # Password is in clear text in this file — restrict to root only.
+  chmod 600 /root/.config/code-server/config.yaml
 
-echo ">>> Installing Anthropic Claude Code IDE extension into code-server..."
-# Install before the service is enabled so the first session has it active
-# without needing a window reload. Extensions land in
-# /root/.local/share/code-server/extensions/ (persistent on the LXC disk).
-# Tolerant of failure — the extension is non-essential (Claude works in TUI
-# without it) and Open VSX availability for vendor-published extensions can
-# vary. When this auto-install fails, the IDE-integration error in
-# `claude /status` is the only user-visible consequence; sideload the VSIX
-# from the Microsoft Marketplace via code-server's Extensions panel to fix.
-if code-server --install-extension anthropic.claude-code >/tmp/cs-ext-install.log 2>&1; then
-  echo "    Claude Code IDE extension installed"
+  echo ">>> Installing Anthropic Claude Code IDE extension into code-server..."
+  # Install before the service is enabled so the first session has it active
+  # without needing a window reload. Extensions land in
+  # /root/.local/share/code-server/extensions/ (persistent on the LXC disk).
+  # Tolerant of failure — the extension is non-essential (Claude works in TUI
+  # without it) and Open VSX availability for vendor-published extensions can
+  # vary. When this auto-install fails, the IDE-integration error in
+  # `claude /status` is the only user-visible consequence; sideload the VSIX
+  # from the Microsoft Marketplace via code-server's Extensions panel to fix.
+  if code-server --install-extension anthropic.claude-code >/tmp/cs-ext-install.log 2>&1; then
+    echo "    Claude Code IDE extension installed"
+  else
+    echo "    ! Claude Code extension auto-install failed — see /tmp/cs-ext-install.log"
+    echo "    ! Sideload manually from the code-server Extensions panel if needed."
+  fi
+
+  systemctl enable --now code-server@root
 else
-  echo "    ! Claude Code extension auto-install failed — see /tmp/cs-ext-install.log"
-  echo "    ! Sideload manually from the code-server Extensions panel if needed."
+  echo ">>> Skipping code-server (opted out at deploy time)."
 fi
-
-systemctl enable --now code-server@root
 
 cd /docker/watchtower && docker compose up -d
 
@@ -658,6 +680,8 @@ PROVISION_EOF
   # Substitute the selected-CLIs placeholder. CT_CLIS is validated to a known
   # alphanumeric set, so it's safe in sed without escaping.
   sed -i "s|@@SELECTED_CLIS@@|${CT_CLIS}|" /tmp/provision-${CT_ID}.sh
+  # CT_CODE_SERVER is "yes" or "no" (validated above) — also safe in sed.
+  sed -i "s|@@INSTALL_CODE_SERVER@@|${CT_CODE_SERVER}|" /tmp/provision-${CT_ID}.sh
 
   chmod +x /tmp/provision-${CT_ID}.sh
   pct push "$CT_ID" /tmp/provision-${CT_ID}.sh /tmp/provision.sh
@@ -682,10 +706,12 @@ PROVISION_EOF
   pct exec "$CT_ID" -- bash -lc "command -v claude" &>/dev/null || missing+=("claude")
   pct exec "$CT_ID" -- bash -lc "command -v node"   &>/dev/null || missing+=("node")
   pct exec "$CT_ID" -- bash -lc "command -v docker" &>/dev/null || missing+=("docker")
-  pct exec "$CT_ID" -- bash -lc "command -v code-server" &>/dev/null || missing+=("code-server")
-  pct exec "$CT_ID" -- systemctl is-active --quiet code-server@root || missing+=("code-server@root (service)")
   pct exec "$CT_ID" -- test -d /project                          || missing+=("/project")
   pct exec "$CT_ID" -- test -f /root/.claude/settings.json       || missing+=("~/.claude/settings.json")
+  if [[ "$CT_CODE_SERVER" == "yes" ]]; then
+    pct exec "$CT_ID" -- bash -lc "command -v code-server" &>/dev/null || missing+=("code-server")
+    pct exec "$CT_ID" -- systemctl is-active --quiet code-server@root || missing+=("code-server@root (service)")
+  fi
 
   if [[ ${#missing[@]} -gt 0 ]]; then
     error "Provisioning incomplete. Missing: ${missing[*]}. Full log: $provision_log"
@@ -694,10 +720,12 @@ PROVISION_EOF
 
   # Replace the placeholder code-server password with the random one we generated.
   # CT_CS_PWD is alphanumeric only, so sed delimiter and shell expansion are safe.
-  info "Setting random code-server password..."
-  pct exec "$CT_ID" -- sed -i "s|password: PLACEHOLDER_CS_PWD|password: ${CT_CS_PWD}|" /root/.config/code-server/config.yaml
-  pct exec "$CT_ID" -- systemctl restart code-server@root >/dev/null 2>&1
-  success "Code-server password set."
+  if [[ "$CT_CODE_SERVER" == "yes" ]]; then
+    info "Setting random code-server password..."
+    pct exec "$CT_ID" -- sed -i "s|password: PLACEHOLDER_CS_PWD|password: ${CT_CS_PWD}|" /root/.config/code-server/config.yaml
+    pct exec "$CT_ID" -- systemctl restart code-server@root >/dev/null 2>&1
+    success "Code-server password set."
+  fi
 
   rm -f /tmp/provision-${CT_ID}.sh
 }
@@ -722,11 +750,13 @@ print_summary() {
   echo -e "  ${BOLD}Connect:${NC}"
   echo -e "    Console:  ${CYAN}pct enter $CT_ID${NC}"
   [[ -n "${ct_ip:-}" ]] && echo -e "    SSH:      ${CYAN}ssh root@${ct_ip}${NC}"
-  [[ -n "${ct_ip:-}" ]] && echo -e "    Code:     ${CYAN}http://${ct_ip}:8443${NC}"
-  echo ""
-  echo -e "  ${BOLD}${YELLOW}Code-server password (save now — randomly generated, only shown here):${NC}"
-  echo -e "    ${BOLD}${CT_CS_PWD}${NC}"
-  echo -e "    ${YELLOW}(also retrievable later via: pct exec $CT_ID -- grep '^password:' /root/.config/code-server/config.yaml)${NC}"
+  if [[ "$CT_CODE_SERVER" == "yes" ]]; then
+    [[ -n "${ct_ip:-}" ]] && echo -e "    Code:     ${CYAN}http://${ct_ip}:8443${NC}"
+    echo ""
+    echo -e "  ${BOLD}${YELLOW}Code-server password (save now — randomly generated, only shown here):${NC}"
+    echo -e "    ${BOLD}${CT_CS_PWD}${NC}"
+    echo -e "    ${YELLOW}(also retrievable later via: pct exec $CT_ID -- grep '^password:' /root/.config/code-server/config.yaml)${NC}"
+  fi
   echo ""
   echo -e "  ${BOLD}Start Claude Code:${NC}"
   echo -e "    ${CYAN}claude${NC}    (shell auto-cd's to /project on login)"
@@ -737,7 +767,11 @@ print_summary() {
   echo "    • Rust (via rustup)       • Docker + Compose"
   echo "    • Git, ripgrep, fzf, fd   • Build essentials"
   echo "    • PostgreSQL & Redis CLI  • Watchtower (auto-update containers)"
-  echo "    • Code Server (port 8443) • lazygit, direnv, httpie, rclone"
+  if [[ "$CT_CODE_SERVER" == "yes" ]]; then
+    echo "    • Code Server (port 8443) • lazygit, direnv, httpie, rclone"
+  else
+    echo "    • lazygit, direnv, httpie, rclone (code-server skipped)"
+  fi
   [[ -n "$CT_CLIS" ]] && echo "    • CLIs selected: $CT_CLIS"
 
   if [[ -n "$CT_CLIS" ]]; then

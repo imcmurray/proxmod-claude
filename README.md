@@ -16,7 +16,7 @@ A privileged Ubuntu 24.04 LXC container with:
 - Pre-installed plugins: frontend-design, code-review, commit-commands, security-guidance, context7, webapp-testing, superpowers
 - Languages: Node.js 22 LTS, Python 3.12 (with `uv`), Go (latest), Rust (latest)
 - Docker + Compose running inside the LXC, with Watchtower auto-updating containers
-- Code-server (browser VS Code) on port 8443 with a randomly-generated password — runs natively as a systemd service so the integrated terminal is the LXC shell, with `claude` already on PATH
+- **Optional** code-server (browser VS Code) on port 8443 — Y/n prompt at deploy, default Yes. Runs natively as a systemd service so the integrated terminal is the LXC shell with `claude` already on PATH; Anthropic's Claude Code IDE extension is auto-installed. Skip with `n` if you only want SSH/`pct enter` access (saves ~200 MB and an open port).
 - **Always-installed extras** (no auth burden): `lazygit`, `uv`, `direnv` (with bash hook), `httpie`, `rclone`
 - **Optional cloud/deploy CLIs** (chosen via prompt at deploy time): `gh`, `railway`, `wrangler`, `aws`, `flyctl`, `vercel`, `doctl` — defaults to `gh railway wrangler`, type `all` or `none` to override
 - ripgrep / fd / fzf / bat / jq / postgres-client / redis-tools / sqlite3 / Playwright
@@ -104,6 +104,7 @@ You'll be prompted for:
 | DNS | `1.1.1.2` | Cloudflare malware-blocking; plain `1.1.1.1` also fine |
 | SSH key path | *(none)* | Paste `/root/.ssh/id_ed25519.pub` or similar |
 | Cloud/deploy CLIs | `gh railway wrangler` | Space-separated. `all` or `none` accepted. Valid: `gh railway wrangler aws flyctl vercel doctl` |
+| Install code-server? | `Y` | `Y/n` — installs browser VS Code on `:8443` with the Claude Code IDE extension. `n` skips it (no service, no open port, no random password generated). |
 
 Then it confirms with a summary, you type `y`, and the script:
 
