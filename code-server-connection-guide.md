@@ -226,6 +226,21 @@ Technically yes — multiple browsers can hit `:8443` with the same password and
 ### "My laptop's VS Code shows two installs in the LXC: `code-server` and `.vscode-server` — one is bigger"
 Normal. They are independent products living side-by-side. Removing `~/.vscode-server/` only affects Remote-SSH; code-server itself is unaffected. Removing the code-server install (`apt remove code-server` on a native deploy, or `docker compose down && rm -rf /docker/code-server` on an older Docker deploy) only affects the browser editor; Remote-SSH is unaffected.
 
+### "Paste says 'Unable to read from the browser's clipboard' (Firefox)"
+Firefox gates the async clipboard read API behind two `about:config` flags that are **off by default**, regardless of how trusted the origin's cert is or whether you've granted clipboard permission to the site. Real-cert origins (Cloudflare-fronted hostnames) and self-signed local origins both hit this. Fix:
+
+```
+1. about:config → accept the warning
+2. Set dom.events.asyncClipboard.readText        → true
+3. Set dom.events.asyncClipboard.clipboardItem   → true
+4. Restart Firefox completely
+5. Reload code-server, paste once → click "Allow" on the per-site permission prompt
+```
+
+After that, paste works for the rest of that origin's lifetime; the per-site grant is remembered. Each new origin (LAN IP vs. Cloudflare hostname) still needs its own grant on first paste.
+
+Chromium-based browsers (Chrome / Edge / Brave / Vivaldi) ship with the async clipboard API enabled in secure contexts by default — no flag-flipping required. If Firefox's restrictions become tedious, switching browsers for code-server specifically is a reasonable workaround.
+
 ### "Cloudflare gives me a 502 Bad Gateway when I hit my tunnel hostname"
 The tunnel can reach Cloudflare's edge, but cloudflared can't complete the request to your origin. With code-server's self-signed cert (the default), the cause is almost always **TLS validation on the origin connection**: cloudflared connects to `https://localhost:8443`, the cert isn't publicly trusted, validation fails, Cloudflare returns 502.
 
