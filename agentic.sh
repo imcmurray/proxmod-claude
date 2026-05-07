@@ -591,7 +591,7 @@ mkdir -p /docker/watchtower
 cat > /docker/watchtower/docker-compose.yml << 'DCOMPOSE'
 services:
   watchtower:
-    image: containrrr/watchtower
+    image: nickfedor/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     environment:
