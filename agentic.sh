@@ -469,7 +469,7 @@ cat > /project/CLAUDE.md << 'CLAUDEMD'
 
 ## Available Tools
 - **Languages**: Node.js 22 LTS, Python 3.12, Go (latest), Rust (latest)
-- **Package managers**: npm, pip (use --break-system-packages), cargo, go install
+- **Package managers**: npm, pip (inside a venv — see Conventions), cargo, go install
 - **Docker**: Docker Engine + Compose plugin, running and ready
 - **Containers**: Watchtower (auto-updates), Code Server (port 8443)
 - **Search tools**: ripgrep (rg), fd-find (fdfind), fzf, bat
