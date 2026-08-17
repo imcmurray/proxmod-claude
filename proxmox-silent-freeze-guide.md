@@ -47,11 +47,30 @@ Interpretation:
 Then sweep 30 days of kernel logs for software-side culprits:
 
 ```bash
-journalctl -k --since "30 days ago" | grep -iE "panic|oops|out of memory|killed process|hung task|blocked for more than|nvme.*reset|nvme.*timeout|cifs.*reconnect|watchdog|soft lockup"
+journalctl --since "30 days ago" _TRANSPORT=kernel | grep -iE "panic|oops|out of memory|killed process|hung task|blocked for more than|nvme.*reset|nvme.*timeout|cifs.*reconnect|watchdog|soft lockup"
 ```
 
 Empty result → silent hang confirmed. Continue with this guide.
 Hits → diagnose the specific subsystem instead.
+
+> ### ⚠️ `journalctl -k` silently means "this boot only"
+>
+> **`-k` implies `-b`.** So `journalctl -k --since "30 days ago"` does *not* search 30 days — it
+> searches the current boot, then filters that by date. On a host that rebooted an hour ago it
+> returns almost nothing, and the emptiness looks exactly like a clean bill of health.
+>
+> This is a nasty failure mode for *this* guide in particular, because you run these sweeps
+> **right after a reboot** — precisely when the current boot is empty.
+>
+> ```bash
+> journalctl -k --since "30 days ago"            # WRONG - current boot only
+> journalctl --since "30 days ago" _TRANSPORT=kernel   # RIGHT - spans all boots
+> ```
+>
+> Real cost of getting this wrong: on one cluster it produced "zero NIC hangs in 30 days on all
+> three nodes", which ruled out §6a and misattributed a hang to a kernel upgrade. The correct
+> query found **458,000 hangs going back two years**. `-k -b` is fine when you *mean* the current
+> boot (see §4) — just never pair `-k` with `--since`.
 
 Also confirm SMART is healthy (rule out a dying drive masquerading as a host hang):
 
@@ -157,9 +176,61 @@ ip -br link
 # Disable hardware offloads (replace eno1 with yours)
 ethtool -K eno1 tso off gso off gro off lro off
 
-# Persist via /etc/network/interfaces — append under the iface block:
+# Persist via /etc/network/interfaces — append under the iface block
+# (put it on the BRIDGE stanza if eno1 is `inet manual` and brought up by a bridge):
 #     post-up /sbin/ethtool -K eno1 tso off gso off gro off lro off
 ```
+
+#### What a hang actually looks like
+
+The link reports **`UP,LOWER_UP` with its IP still bound** — it simply moves no packets. Link
+state is not a liveness check, so this presents as "the host is down" even though the host is
+fine. On a multi-homed box, the giveaway is that it still answers on its *other* NICs.
+
+```
+e1000e 0000:00:1f.6 eno1: Detected Hardware Unit Hang:      <- repeats every ~2s
+```
+
+Recovery is a NIC reset (`ip link set eno1 down; ip link set eno1 up`), but the fix is disabling
+the offloads above.
+
+#### Measured effect
+
+Same 3-node EliteDesk 800 G4 DM cluster as §4. Counting hangs across **all** boots
+(`journalctl _TRANSPORT=kernel | grep -c "Hardware Unit Hang"` — see the §2 warning about `-k`):
+
+| Node | Hangs before fix | Worst period | Hangs since offloads disabled |
+|------|------------------|--------------|-------------------------------|
+| pmve1 | 55,879 | 39,758 in one month | **0** |
+| pmve2 | 298,694 | 149 in a 5-minute storm | **0** |
+| pmve3 | 103,736 | 94,180 in one month | **0** |
+
+**~458,000 hangs across two years**, all three nodes, on stock settings. Zero on all three since
+the offloads were disabled.
+
+Two things that make this hard to spot:
+
+- **It is episodic.** It storms during a particular boot, stops when that node reboots, then
+  recurs months later on a *different* node. A quiet week proves nothing.
+- **`dmesg` only covers the current boot.** Check the journal across boots or you will conclude
+  a chronically affected host is clean — see the §2 warning.
+
+#### Automatic recovery (optional but cheap)
+
+Because a hang is silent and self-sustaining, a small watchdog turns a multi-hour outage into a
+~1-minute one. Fire **only** when both conditions hold, so log noise alone never bounces the NIC:
+
+```bash
+#!/bin/bash
+# /usr/local/sbin/eno1-hang-watchdog.sh   (systemd timer, every 60s)
+journalctl -k --since "120 seconds ago" | grep -q "Hardware Unit Hang" || exit 0
+ping -c2 -W2 <gateway> >/dev/null 2>&1 && exit 0     # hang logged but traffic flows -> no action
+logger -t eno1-watchdog "hang + gateway unreachable - resetting eno1"
+ethtool -K eno1 tso off gso off gro off lro off
+ip link set eno1 down; sleep 3; ip link set eno1 up
+```
+
+(`-k` is correct *here* — you deliberately want the current boot.)
 
 ### 6b. i915 iGPU power management
 
@@ -401,7 +472,7 @@ Also add a second corosync link for redundancy (`ring1_addr` on a different fabr
 
 - [ ] `cat /proc/cmdline` shows all four kernel flags
 - [ ] No `Unsafe Shutdowns` increase in SMART over a week of uptime
-- [ ] `journalctl -k --since "1 week ago" | grep -iE "AER|aspm|nvme.*reset"` is empty or stable
+- [ ] `journalctl --since "1 week ago" _TRANSPORT=kernel | grep -iE "AER|aspm|nvme.*reset"` is empty or stable
 - [ ] `uptime` reflects actual continuous runtime
 - [ ] Web UI / SSH responsive throughout
 
@@ -413,7 +484,8 @@ Also add a second corosync link for redundancy (`ring1_addr` on a different fabr
 # Triage
 journalctl --list-boots
 journalctl -b -1 --no-pager | tail -50
-journalctl -k --since "30 days ago" | grep -iE "panic|oops|out of memory|hung task|nvme.*reset|cifs.*reconnect|watchdog|soft lockup"
+journalctl --since "30 days ago" _TRANSPORT=kernel | grep -iE "panic|oops|out of memory|hung task|nvme.*reset|cifs.*reconnect|watchdog|soft lockup"
+#   NB: never `journalctl -k --since ...` — -k implies -b (current boot only). See §2.
 smartctl -a /dev/nvme0
 free -h
 ps auxf | awk '$8 ~ /D/'
