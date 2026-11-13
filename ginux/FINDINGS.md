@@ -83,3 +83,7 @@ Look at Ginux again only if upstream ships all of the following, and only for a 
 - The console is a real pty.
 
 That would still be a different product from this LXC.
+
+## Cluster trial
+
+[`PROXMOX.md`](PROXMOX.md) is the way to try this on the Proxmox cluster without installing Ginux on pmve1, pmve2, or pmve3. It uses a Debian VM, the patch in [`patches/49b4230-systemd-node.patch`](patches/49b4230-systemd-node.patch), and a guest bootstrap that installs the same Node build and then runs the Claude Code installer from `agentic.sh`. The installer has not been proven inside Ginux. The VM is there to find out where it stops.

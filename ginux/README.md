@@ -9,7 +9,7 @@ This branch tested Ginux (userspace kernel) as an isolation boundary for Claude 
 
 ## Status
 
-Closed. Ginux is not a replacement for the Proxmox LXC. The writeup is [`FINDINGS.md`](FINDINGS.md). The recipe that was booted is [`contracts/claude-node.toml`](contracts/claude-node.toml).
+Closed as a replacement for the LXC. The writeup is [`FINDINGS.md`](FINDINGS.md). The recipe that was booted is [`contracts/claude-node.toml`](contracts/claude-node.toml). To reproduce that guest on the cluster and attempt the Claude installer, use [`PROXMOX.md`](PROXMOX.md).
 
 ## Notes
 

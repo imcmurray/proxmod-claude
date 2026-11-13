@@ -35,6 +35,7 @@ A privileged Ubuntu 24.04 LXC container with:
 | [`proxmox-silent-freeze-guide.md`](./proxmox-silent-freeze-guide.md) | Diagnostic runbook if a Proxmox host randomly freezes. Reusable on other hosts. |
 | [`proxmox-alerting-guide.md`](./proxmox-alerting-guide.md) | How cluster alerts reach your phone via ntfy — PVE's built-in notifications plus a health-check timer for the things PVE doesn't cover (node down, Ceph health, NIC hangs). Includes the matcher trap that silently routes nothing. |
 | [`ginux/FINDINGS.md`](./ginux/FINDINGS.md) | Ginux userspace-kernel trial against this LXC. Conclusion: keep `agentic.sh`. |
+| [`ginux/PROXMOX.md`](./ginux/PROXMOX.md) | How to reproduce that guest on a cluster VM and attempt the Claude installer. |
 
 ---
 

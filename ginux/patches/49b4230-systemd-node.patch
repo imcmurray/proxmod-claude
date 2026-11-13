@@ -1,0 +1,174 @@
+diff --git a/crates/ginux-init/src/launch.rs b/crates/ginux-init/src/launch.rs
+index f4603b2..9a2571d 100644
+--- a/crates/ginux-init/src/launch.rs
++++ b/crates/ginux-init/src/launch.rs
+@@ -1238,8 +1238,10 @@ fn supervise_launch(pid: usize, instance: &mut Instance, contract: &EffectiveCon
+                 }
+             }
+             Action::Mediate if syscall == 99 => {
+-                let result = write_tracee_bytes(pid, registers.rdi as usize, &virtual_sysinfo())
+-                    .map_or_else(|error| error, |_| 0);
++                let total_bytes = instance.config().memory_mib.saturating_mul(1024 * 1024);
++                let result =
++                    write_tracee_bytes(pid, registers.rdi as usize, &virtual_sysinfo(total_bytes))
++                        .map_or_else(|error| error, |_| 0);
+                 audit_write(b"emulate surface=virtual-system result=");
+                 audit_i64(result);
+                 audit_write(b"\n");
+diff --git a/crates/ginux-init/src/main.rs b/crates/ginux-init/src/main.rs
+index 1bd9534..34b35ca 100644
+--- a/crates/ginux-init/src/main.rs
++++ b/crates/ginux-init/src/main.rs
+@@ -5851,11 +5851,18 @@ fn supervise_native(
+             // POLLHUP distinguishes final reaping from an exited zombie and
+             // remains meaningful even if the numeric host PID is reused.
+             let mut lifetime_pidfd = unsafe { syscall2(SYS_PIDFD_OPEN, child_host_pid, 0) };
+-            // A non-leader thread is not waitid-reapable and older pidfd
+-            // ABIs cannot open it. Preserve that existing thread lane.
+-            if event == PTRACE_EVENT_CLONE && matches!(lifetime_pidfd, -22 | -3) {
++            // A non-leader thread is not waitid-reapable, and pidfd_open
++            // without PIDFD_THREAD rejects it: EINVAL on older kernels, ENOENT
++            // on Linux 6.9 and later. ESRCH means it exited before the pin.
++            // Those stay on the thread lane, which does not use a pidfd.
++            if event == PTRACE_EVENT_CLONE && matches!(lifetime_pidfd, -2 | -3 | -22) {
+                 lifetime_pidfd = -1;
+             } else if lifetime_pidfd < 0 {
++                write_all(b"GINUX_NATIVE: child-lifetime-pin errno=");
++                write_i64(-(lifetime_pidfd as i64));
++                write_all(b" event=");
++                write_u64(event as u64);
++                write_all(b"\n");
+                 native_fail(instance, pid, b"native child lifetime pin failed");
+             }
+             tasks[child_slot] = Some(NativeSupervisorTask {
+@@ -7247,9 +7254,13 @@ fn supervise_native(
+         write_all(b" action=");
+         match decision.action {
+             Action::Mediate if syscall == 99 => {
+-                let result =
+-                    write_tracee_bytes_result(host_pid, registers.rdi as usize, &virtual_sysinfo())
+-                        .map_or_else(|error| error, |_| 0);
++                let total_bytes = instance.config().memory_mib.saturating_mul(1024 * 1024);
++                let result = write_tracee_bytes_result(
++                    host_pid,
++                    registers.rdi as usize,
++                    &virtual_sysinfo(total_bytes),
++                )
++                .map_or_else(|error| error, |_| 0);
+                 write_all(b"emulate surface=virtual-system result=");
+                 write_i64(result);
+                 write_all(b"\n");
+@@ -9849,6 +9860,10 @@ fn native_arguments_allowed(syscall: u64, registers: &UserRegs, mode: usize) ->
+     if mode == 3 {
+         match syscall {
+             ginux_core::SYS_PIDFD_OPEN => registers.rdi > 0 && registers.rsi == 0,
++            // V8 maps a JIT region writable and executable in one call, then
++            // checks that a failed mprotect sets errno to ENOMEM. The balanced
++            // W^X argument check returns EPERM, which aborts the isolate.
++            9 | 10 => true,
+             293 => registers.rdi != 0 && registers.rsi & !(0x8_0000 | 0x800) == 0,
+             ginux_core::SYS_CLOSE_RANGE => true,
+             452 => {
+diff --git a/crates/ginux-init/src/supervisor.rs b/crates/ginux-init/src/supervisor.rs
+index 9103c62..c1f61d1 100644
+--- a/crates/ginux-init/src/supervisor.rs
++++ b/crates/ginux-init/src/supervisor.rs
+@@ -318,10 +318,16 @@ pub fn write_tracee_bytes(pid: usize, address: usize, bytes: &[u8]) -> Result<()
+     poke_tracee_bytes(pid, address, bytes).map_err(fault_errno)
+ }
+ 
+-/// Deterministic x86-64 `struct sysinfo`: no host counters are exposed and
+-/// `mem_unit = 1` keeps libc's page calculations well-defined.
+-pub fn virtual_sysinfo() -> [u8; 112] {
++/// Deterministic x86-64 `struct sysinfo`.
++///
++/// Host uptime, load, swap, and process counts stay zero. `totalram` and
++/// `freeram` are the recipe memory in bytes (`mem_unit` is 1), so glibc's
++/// `_SC_PHYS_PAGES` is `total_bytes / page_size`. A zero `totalram` makes that
++/// value 0, and systemd 257 aborts in `physical_memory()` on the assertion.
++pub fn virtual_sysinfo(total_bytes: u64) -> [u8; 112] {
+     let mut info = [0u8; 112];
++    info[32..40].copy_from_slice(&total_bytes.to_ne_bytes());
++    info[40..48].copy_from_slice(&total_bytes.to_ne_bytes());
+     info[104..108].copy_from_slice(&1u32.to_ne_bytes());
+     info
+ }
+diff --git a/scripts/test-launch.py b/scripts/test-launch.py
+index 04670c0..1e1aab7 100644
+--- a/scripts/test-launch.py
++++ b/scripts/test-launch.py
+@@ -185,7 +185,7 @@ def main():
+                stdout=b"set_tid_address=4242\ngetpid=4242\ngettid=-38\nfutex_lock_pi=-1\n"
+                b"pi_word=0\nfutex_lock_pi_flags=-1\npi_flags_word=0\n")
+         invoke(["ysinfo"], 0, "exited",
+-               stdout=b"sysinfo=0\nsysinfo-zero=1\nmem-unit=1\nsysinfo-null=-14\n")
++               stdout=b"sysinfo=0\nsysinfo-zero=1\nmem-unit=1\ntotalram=268435456\nfreeram=268435456\nsysinfo-null=-14\n")
+         invoke(["oversized"], 0, "exited",
+                stdout=b"read=1048576\npread=1048576\n" + b"x" * 4096 + b"write=4096\n")
+         invoke(["random"], 0, "exited", stdout=b"getrandom=256\n")
+diff --git a/scripts/test-native-supervision.py b/scripts/test-native-supervision.py
+index 5467255..eab8dbf 100644
+--- a/scripts/test-native-supervision.py
++++ b/scripts/test-native-supervision.py
+@@ -131,7 +131,8 @@ sys_read = ["/"]
+         fixture = [line for line in out.splitlines() if line.startswith("GINUX_FIXTURE: ")]
+         check("sysinfo is deterministic and private", code == 0 and fixture == [
+             "GINUX_FIXTURE: sysinfo=0", "GINUX_FIXTURE: sysinfo-zero=1",
+-            "GINUX_FIXTURE: mem-unit=1", "GINUX_FIXTURE: sysinfo-null=-14"]
++            "GINUX_FIXTURE: mem-unit=1", "GINUX_FIXTURE: totalram=268435456",
++            "GINUX_FIXTURE: freeram=268435456", "GINUX_FIXTURE: sysinfo-null=-14"]
+             and "GINUX_NATIVE_CHECK: PASS" in out, code, out)
+ 
+         code, out = run("oversized")
+diff --git a/tests/fixtures/launch-fixture.c b/tests/fixtures/launch-fixture.c
+index ac7e844..0d14b9e 100644
+--- a/tests/fixtures/launch-fixture.c
++++ b/tests/fixtures/launch-fixture.c
+@@ -179,11 +179,20 @@ long launch_fixture_main(word *stack)
+         long result = call3(99, (word)info, 0, 0);
+         word zero = 1;
+         for (word i = 0; i < sizeof info; ++i) {
+-            if (i < 104 || i >= 108) zero &= info[i] == 0;
++            if ((i >= 32 && i < 48) || (i >= 104 && i < 108)) continue;
++            zero &= info[i] == 0;
++        }
++        word totalram = 0;
++        word freeram = 0;
++        for (word i = 0; i < 8; ++i) {
++            totalram |= (word)info[32 + i] << (8 * i);
++            freeram |= (word)info[40 + i] << (8 * i);
+         }
+         print_number("sysinfo=", result);
+         print_number("sysinfo-zero=", zero);
+         print_number("mem-unit=", *(unsigned int *)(info + 104));
++        print_number("totalram=", totalram);
++        print_number("freeram=", freeram);
+         print_number("sysinfo-null=", call3(99, 0, 0, 0));
+         return 0;
+     }
+diff --git a/tests/fixtures/native-fixture.c b/tests/fixtures/native-fixture.c
+index 71a0df3..676f02c 100644
+--- a/tests/fixtures/native-fixture.c
++++ b/tests/fixtures/native-fixture.c
+@@ -184,11 +184,20 @@ long native_fixture_main(void)
+         long result = call3(99, (word)info, 0, 0);
+         word zero = 1;
+         for (word i = 0; i < sizeof info; ++i) {
+-            if (i < 104 || i >= 108) zero &= info[i] == 0;
++            if ((i >= 32 && i < 48) || (i >= 104 && i < 108)) continue;
++            zero &= info[i] == 0;
++        }
++        word totalram = 0;
++        word freeram = 0;
++        for (word i = 0; i < 8; ++i) {
++            totalram |= (word)info[32 + i] << (8 * i);
++            freeram |= (word)info[40 + i] << (8 * i);
+         }
+         print_result("GINUX_FIXTURE: sysinfo=", result);
+         print_result("GINUX_FIXTURE: sysinfo-zero=", zero);
+         print_result("GINUX_FIXTURE: mem-unit=", *(unsigned int *)(info + 104));
++        print_result("GINUX_FIXTURE: totalram=", totalram);
++        print_result("GINUX_FIXTURE: freeram=", freeram);
+         print_result("GINUX_FIXTURE: sysinfo-null=", call3(99, 0, 0, 0));
+         return 0;
+     }
