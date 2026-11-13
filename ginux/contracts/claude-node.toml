@@ -4,8 +4,15 @@
 # On Ginux 49b4230 the path rule that is actually enforced is `deny`:
 # writes under /boot, /etc, and /usr fail after pre-boot hooks. The `write`
 # list grants filesystem writes as a class; it does not limit them to those
-# directories. Network connect and bind are enforced per port. Hooks run
-# before the write denies, which is why they can still seed /etc.
+# directories. Hooks run before the write denies, which is why they can still
+# seed /etc.
+#
+# An empty network allow list means allow-all. `default = "deny"` does not
+# change that. Inbound is explicit wildcards so a guest can bind a port when
+# it wants to. The host kernel still refuses ports below 1024: the guest
+# process is uid 65534 and has no capabilities. Ginux shares the VM network
+# namespace. 127.0.0.1 is the VM's localhost (SSH -L). 0.0.0.0 is the VM's
+# LAN address. There is no separate Ginux address.
 #
 # Development root password remains "ginux". Replace it before any shared use.
 schema_version = 1
@@ -50,7 +57,7 @@ deny = ["/boot", "/etc", "/usr"]
 
 [contract.network]
 default = "deny"
-inbound = []
+inbound = ["tcp:*", "udp:*"]
 outbound = ["tcp:443", "udp:53"]
 
 [contract.devices]

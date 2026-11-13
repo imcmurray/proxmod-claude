@@ -52,6 +52,16 @@ install_host() {
     install -m 755 "$runtime_path" /usr/local/libexec/ginux-runtime
     install -m 755 "$ginux_src/scripts/ginux-host-controller.sh" /usr/local/bin/ginux
     install -m 755 "$ginux_src/scripts/ginux-host-instance-helper.sh" /usr/local/libexec/ginux-instance-helper
+    # The helper opens descriptor 10 for the console control FIFO. Debian
+    # /bin/sh is dash and rejects that with "exec: 10: not found", so the
+    # supervisor exits before the guest boots. Bash accepts the descriptor.
+    if ! /bin/sh -c 'exec 10>&-' >/dev/null 2>&1; then
+        command -v bash >/dev/null 2>&1 || {
+            printf '%s\n' 'bash is required: /bin/sh cannot open file descriptor 10' >&2
+            exit 1
+        }
+        sed -i '1s|^#!/bin/sh|#!/bin/bash|' /usr/local/libexec/ginux-instance-helper
+    fi
     for script in \
         fetch-rocky-oci.sh \
         verify-rocky-oci.sh \

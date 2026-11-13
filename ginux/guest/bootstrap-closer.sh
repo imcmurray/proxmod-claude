@@ -20,12 +20,16 @@ need() {
 run_elf() {
     binary=$1
     shift
+    # tar often creates the file already mode 0755, then chmod is denied.
+    # The binary is executable and still needs libatomic, which is not on
+    # the default loader path because /usr is not writable.
+    LD_LIBRARY_PATH="/opt/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH
     if [ -x "$binary" ]; then
         "$binary" "$@"
         return
     fi
-    LD_LIBRARY_PATH="/opt/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-        /lib64/ld-linux-x86-64.so.2 "$binary" "$@"
+    /lib64/ld-linux-x86-64.so.2 "$binary" "$@"
 }
 
 need curl
@@ -38,7 +42,10 @@ mkdir -p /opt /tmp
 curl -fsSL -o /tmp/node.tar.gz \
     "https://nodejs.org/dist/${node_version}/node-${node_version}-linux-x64.tar.gz"
 # tar returns non-zero when chmod is denied. The files are still unpacked.
-tar -xf /tmp/node.tar.gz -C /opt || true
+# The mode errors are expected and huge, so keep them out of the console.
+tar -xf /tmp/node.tar.gz -C /opt >/tmp/tar-node.err 2>&1 || true
+chmod_denied=$(grep -c "Cannot change mode" /tmp/tar-node.err || true)
+printf 'tar chmod denials: %s\n' "$chmod_denied"
 test -f "$node_prefix/bin/node"
 
 printf '%s\n' '>>> libatomic'
@@ -88,27 +95,38 @@ case $version in
     *) printf 'unexpected Claude version reply: %s\n' "$version" >&2; exit 1 ;;
 esac
 curl -fsSL -o /tmp/claude-manifest.json "$claude_base/$version/manifest.json"
-checksum=$(python3 - << 'PY'
+python3 - << 'PY'
 import json
 manifest = json.load(open("/tmp/claude-manifest.json"))
-print(manifest["platforms"]["linux-x64"]["checksum"])
+checksum = manifest["platforms"]["linux-x64"]["checksum"]
+with open("/tmp/claude-checksum.txt", "w") as handle:
+    handle.write(checksum + "\n")
 PY
-)
+checksum=$(tr -d '\r\n' < /tmp/claude-checksum.txt)
 mkdir -p /root/.claude/downloads /root/.local/bin /project
 binary=/root/.claude/downloads/claude-$version-linux-x64
 curl -fsSL -o "$binary" "$claude_base/$version/linux-x64/claude"
+# One read() of the whole binary returns EPERM inside this guest.
+# Hashing in 1 MiB chunks succeeds.
 python3 - "$binary" "$checksum" << 'PY'
 import hashlib, sys
 path, expected = sys.argv[1], sys.argv[2]
-digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
-if digest != expected:
-    sys.exit(f"checksum mismatch {digest} != {expected}")
-print("checksum ok", digest)
+digest = hashlib.sha256()
+with open(path, "rb") as handle:
+    while True:
+        chunk = handle.read(1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+actual = digest.hexdigest()
+if actual != expected:
+    sys.exit(f"checksum mismatch {actual} != {expected}")
+print("checksum ok", actual)
 PY
 chmod +x "$binary" 2>/dev/null || printf '%s\n' 'chmod denied; launching through the dynamic linker'
-# `install` with no channel matches agentic.sh. This step is not yet proven
-# inside Ginux. A non-zero status is reported and the rest of the layout is
-# still written.
+# `install` with no channel matches agentic.sh. On the trial VM this returned
+# 0 after the console-fd table was raised. A non-zero status is still reported
+# and the rest of the layout is written.
 if run_elf "$binary" install; then
     printf '%s\n' 'claude install returned 0'
 else

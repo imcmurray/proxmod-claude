@@ -16,10 +16,21 @@ index f4603b2..9a2571d 100644
                  audit_i64(result);
                  audit_write(b"\n");
 diff --git a/crates/ginux-init/src/main.rs b/crates/ginux-init/src/main.rs
-index 1bd9534..34b35ca 100644
+index 1bd9534..c2db8f0 100644
 --- a/crates/ginux-init/src/main.rs
 +++ b/crates/ginux-init/src/main.rs
-@@ -5851,11 +5851,18 @@ fn supervise_native(
+@@ -121,7 +121,9 @@ const PROT_READ_WRITE: usize = 1 | 2;
+ const MAP_SHARED_ANONYMOUS: usize = 1 | 0x20;
+ const INSTANCE_NULL_FD: usize = 240;
+ const INSTANCE_CONSOLE_FD: usize = 241;
+-const NATIVE_PROC_FD_LIMIT: usize = 512;
++// A dup of the console onto fd 512 or above used to kill the guest.
++// Claude's loader does that. The table is still fixed; this only raises it.
++const NATIVE_PROC_FD_LIMIT: usize = 4096;
+ const NATIVE_SOCKET_FD_LIMIT: usize = 64;
+ const NATIVE_VIRTUAL_KERNEL_FD_LIMIT: usize = 256;
+ const NATIVE_VIRTUAL_DIRECTORY_LIMIT: usize = 128;
+@@ -5851,11 +5853,18 @@ fn supervise_native(
              // POLLHUP distinguishes final reaping from an exited zombie and
              // remains meaningful even if the numeric host PID is reused.
              let mut lifetime_pidfd = unsafe { syscall2(SYS_PIDFD_OPEN, child_host_pid, 0) };
@@ -41,7 +52,7 @@ index 1bd9534..34b35ca 100644
                  native_fail(instance, pid, b"native child lifetime pin failed");
              }
              tasks[child_slot] = Some(NativeSupervisorTask {
-@@ -7247,9 +7254,13 @@ fn supervise_native(
+@@ -7247,9 +7256,13 @@ fn supervise_native(
          write_all(b" action=");
          match decision.action {
              Action::Mediate if syscall == 99 => {
@@ -58,7 +69,7 @@ index 1bd9534..34b35ca 100644
                  write_all(b"emulate surface=virtual-system result=");
                  write_i64(result);
                  write_all(b"\n");
-@@ -9849,6 +9860,10 @@ fn native_arguments_allowed(syscall: u64, registers: &UserRegs, mode: usize) ->
+@@ -9849,6 +9862,10 @@ fn native_arguments_allowed(syscall: u64, registers: &UserRegs, mode: usize) ->
      if mode == 3 {
          match syscall {
              ginux_core::SYS_PIDFD_OPEN => registers.rdi > 0 && registers.rsi == 0,

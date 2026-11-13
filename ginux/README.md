@@ -9,10 +9,10 @@ This branch tested Ginux (userspace kernel) as an isolation boundary for Claude 
 
 ## Status
 
-Closed as a replacement for the LXC. The writeup is [`FINDINGS.md`](FINDINGS.md). The recipe that was booted is [`contracts/claude-node.toml`](contracts/claude-node.toml). To reproduce that guest on the cluster and attempt the Claude installer, use [`PROXMOX.md`](PROXMOX.md).
+Closed as a replacement for the LXC. The writeup is [`FINDINGS.md`](FINDINGS.md). The recipe that was booted is [`contracts/claude-node.toml`](contracts/claude-node.toml). The cluster VM trial, including port reachability and the Claude installer, is [`PROXMOX.md`](PROXMOX.md).
 
 ## Notes
 
 - Official `make doctor` / `make host-run` target macOS arm64 and QEMU TCG. On Linux the runtime is `cargo build -p ginux-init --target x86_64-unknown-linux-gnu --release`. That binary does not implement `create` or `start`; those commands are the host controller script.
 - Isolation is contract-mediated (ptrace/seccomp), not VM-grade.
-- Node v26.13.1 ran once, after three local supervisor patches that are not in this repo. Claude Code did not.
+- Node v26.13.1 ran on the workstation. On VM 117, Claude Code 2.1.323 installed and `--version` printed. The supervisor diff is [`patches/49b4230-systemd-node.patch`](patches/49b4230-systemd-node.patch). That did not make Ginux a replacement for the LXC.

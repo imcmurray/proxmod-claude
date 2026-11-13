@@ -14,32 +14,39 @@ Use a new VM, not an existing guest:
 - tag `homelab`
 - not HA, `onboot` off
 
-On a cluster node, as root:
+On a cluster node, as root. The image belongs on `QNAP-NFS`, which this cluster already uses for ISOs. The guest disk and the cloud-init drive belong on `CephStorage`, the same place VM 100 keeps its cloud-init drive. `local:cloudinit` is the wrong storage here.
 
 ```bash
 VMID=$(pvesh get /cluster/nextid)
-curl -fL -o /var/tmp/debian-13-generic-amd64.qcow2 \
+curl -fL -o /mnt/pve/QNAP-NFS/template/iso/debian-13-generic-amd64.qcow2 \
   https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
-qm create "$VMID" --name ginux-trial --memory 4096 --cores 2 \
-  --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-single --ostype l26 \
-  --agent enabled=1 --tags homelab --onboot 0 --serial0 socket --vga serial0
-qm importdisk "$VMID" /var/tmp/debian-13-generic-amd64.qcow2 CephStorage
-qm set "$VMID" --scsi0 "CephStorage:vm-${VMID}-disk-0" --boot order=scsi0 \
-  --ide2 local:cloudinit --ciuser ianm --ipconfig0 ip=dhcp \
-  --sshkeys /root/ginux-trial.pub
+qm create "$VMID" --name ginux-trial --memory 4096 --cores 2 --cpu host \
+  --net0 virtio,bridge=vmbr0,firewall=0 --scsihw virtio-scsi-single --ostype l26 \
+  --agent enabled=1 --tags homelab --onboot 0 --serial0 socket --vga serial0 \
+  --description "Experimental Ginux trial. Not production. Safe to destroy."
+qm importdisk "$VMID" /mnt/pve/QNAP-NFS/template/iso/debian-13-generic-amd64.qcow2 CephStorage
+qm set "$VMID" --scsi0 "CephStorage:vm-${VMID}-disk-0,discard=on,ssd=1" \
+  --boot order=scsi0 --ide2 CephStorage:cloudinit --ciuser ianm \
+  --ipconfig0 ip=dhcp --nameserver 192.168.1.1 --sshkeys /root/ginux-trial.pub
 qm resize "$VMID" scsi0 20G
 qm start "$VMID"
 ```
 
-Put the SSH public key you will use at `/root/ginux-trial.pub` on the node before `qm set`. `qm importdisk` prints the volume id. If it is not `vm-${VMID}-disk-0`, use the printed id in `--scsi0`. If `local:cloudinit` is rejected, put that drive on a storage that already hosts cloud-init drives. Find the address with `qm guest cmd "$VMID" network-get-interfaces` after the guest agent answers.
+Put the SSH public key you will use at `/root/ginux-trial.pub` on the node before `qm set`. `qm importdisk` prints the volume id. If it is not `vm-${VMID}-disk-0`, use the printed id in `--scsi0`.
+
+The generic Debian image does not contain `qemu-guest-agent`, so `qm guest cmd` never answers. Cloud-init on this image uses netplan and systemd-networkd, not `/etc/network/interfaces`. DHCP comes up a few seconds after boot. The 2026-11-13 run was VM 117 and got `192.168.1.146`. That address is a dynamic lease. SSH as `ianm` with the key from `ginux-trial.pub`. The user is in the `sudo` group with `NOPASSWD`.
+
+Do not map the Ceph volume and mount it while the VM is running. If you stop the VM and map the disk to read the journal, unmount it and `rbd unmap` before `qm start`.
 
 ## On the VM
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y curl ca-certificates jq gzip tar git
-sysctl kernel.yama.ptrace_scope   # 0 or 1. Both work. 3 does not.
+sudo apt-get install -y curl ca-certificates jq gzip tar git bash
+cat /proc/sys/kernel/yama/ptrace_scope   # 0 or 1. Both work. 3 does not.
 ```
+
+`trial-host.sh` installs the helper, then rewrites its shebang to bash when `/bin/sh` cannot open file descriptor 10. Debian's `/bin/sh` is dash, and dash fails that open with `exec: 10: not found`. The supervisor then exits before the guest boots. The 2026-11-13 VM hit that on the first start.
 
 Clone both trees:
 
@@ -64,11 +71,12 @@ git apply /path/to/proxmod-claude/ginux/patches/49b4230-systemd-node.patch
 cargo build -p ginux-init --target x86_64-unknown-linux-gnu --release
 ```
 
-The three changes in that patch:
+The changes in that patch:
 
 - `sysinfo` reports the recipe RAM, so systemd 257 boots
-- `pidfd_open` returning `ENOENT` for a non-leader thread does not kill the guest (kernel 6.9+, including 7.x)
+- `pidfd_open` returning `ENOENT` for a non-leader thread does not kill the guest (kernel 6.9+, including 6.12 and 7.x)
 - systemd mode allows `mmap` and `mprotect`, including writable-and-executable mappings, so Node's V8 can start
+- the console file-descriptor table is 4096 entries instead of 512, so Claude's loader can dup the console without killing the guest
 
 Install and import:
 
@@ -121,6 +129,18 @@ Then retry inside the guest. The dynamic linker path only works for a dynamicall
 | SSH, `pct enter` | `ginux attach` on the VM. |
 | Docker, code-server, Go, Rust, plugins | Not part of this trial. |
 
-Proven on the workstation before this kit existed: the guest boots, a host path is `ENOENT`, `/tmp` and `/root` are writable, `/etc` and `/usr` are not, TCP 443 works, TCP 80 is denied, and Node prints `NODE_RESULT_END`. The Claude installer itself has not been run inside Ginux yet. That is the question this VM is for.
+## What the 2026-11-13 run did
 
-Logs on the VM if it dies: `/var/lib/ginux/instances/claude/console.log` and `audit.log`. `exit.status` appears only after the instance stops.
+VM 117, Debian 13, Ginux only inside the VM. The recipe's inbound list is `tcp:*` and `udp:*`. Ginux shares the VM's network namespace.
+
+- `0.0.0.0:8877` inside the guest answered HTTP 200 at `http://192.168.1.146:8877/` from the workstation.
+- `127.0.0.1:8878` did not answer on the LAN. `ssh -L` to the VM's localhost did. That is the path for a process bound to localhost.
+- Port 80 was `EACCES`. The guest is host uid 65534 with no capabilities, so ports below 1024 do not open.
+- Outbound HTTPS returned 200. Outbound port 80 was denied.
+- Node v26.13.1 printed its version once `LD_LIBRARY_PATH=/opt/lib` was set. `chmod` during `tar` was denied 1085 times. The `node` binary was already mode `0755`.
+- Claude Code 2.1.323's linux-x64 binary is 346 MiB. A single `read()` of it returns `EPERM`. Hashing in 1 MiB chunks matched the manifest. `chmod +x` on the download was denied, and the dynamic linker ran it.
+- The first `claude install` returned 0. `~/.local/bin/claude --version` printed `2.1.323 (Claude Code)`.
+- Launching that binary killed the guest until the console fd table was raised from 512 to 4096 (`native console descriptor table full`).
+- A second `claude install` printed the success screen and then sat for more than five minutes on denied writes under `/usr/lib/sysimage/rpm`. Stopping it let the bootstrap finish: `CLAUDE_INSTALL_FAILED` for that invocation, the version printed again, settings and `/project/CLAUDE.md` were written, `BOOTSTRAP_DONE`.
+
+Logs on the VM if it dies: `/var/lib/ginux/instances/claude/console.log` and `audit.log`. `exit.status` appears only after the instance stops. VM 117 was left running. The Ginux `claude` guest was left running inside it. Neither is in HA.
